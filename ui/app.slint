@@ -1,0 +1,358 @@
+import { Button, CheckBox, ComboBox, Slider } from "std-widgets.slint";
+
+component KpiCard inherits Rectangle {
+    in property <string> label;
+    in property <string> value;
+    in property <color> accent: #cdd6f4;
+
+    background: #181825;
+    border-radius: 6px;
+    border-width: 1px;
+    border-color: #313244;
+    height: 48px;
+    horizontal-stretch: 1;
+
+    VerticalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        padding-top: 5px;
+        padding-bottom: 5px;
+        alignment: center;
+
+        Text {
+            text: root.label;
+            color: #a6adc8;
+            font-size: 10px;
+            font-weight: 600;
+        }
+        Text {
+            text: root.value;
+            color: root.accent;
+            font-size: 14px;
+            font-weight: 800;
+        }
+    }
+}
+
+export component AppWindow inherits Window {
+    title: "MACES-HiDAC 2D — Simulador Estocástico de Evacuación e Incendios";
+    min-width: 1320px;
+    min-height: 780px;
+    background: #1e1e2e;
+
+    in property <image> canvas-frame;
+    in property <image> chart-frame;
+    in property <image> inspector-bars-frame;
+    in property <string> status-text: "Rutina Normal activa. Haz clic en un cuarto para iniciar fuego o elige un Preset.";
+    in property <string> inspector-text: "Haz clic en un agente o usa 'Sig. Brigadista' para ver métricas.";
+    in property <int> total-agents: 180;
+    in property <int> evacuated-agents: 0;
+    in property <int> alerted-agents: 0;
+    in property <int> fallen-agents: 0;
+    in property <int> incapacitated-agents: 0;
+    in property <string> sim-time-text: "0.0 s";
+    in property <string> aset-rset-text: "Seg. / --";
+    in-out property <float> population-slider: 180.0;
+    in-out property <bool> is-running: false;
+    in-out property <int> view-mode: 0;
+    in-out property <int> active-tool: 0;
+    in-out property <bool> show-graph: false;
+    in-out property <bool> show-thermal: true;
+    in-out property <bool> global-alarm: false;
+    in-out property <bool> enable-comm: true;
+    in-out property <bool> enable-social: true;
+    in-out property <float> panic-slider: 15.0;
+    in-out property <float> trained-slider: 10.0;
+    in-out property <float> avoidance-slider: 0.5;
+
+    callback canvas-clicked(float, float, float, float);
+    callback request-redraw();
+    callback toggle-running();
+    callback update-parameters();
+    callback reset-building();
+    callback load-preset(int);
+    callback next-warden();
+    callback change-population();
+
+    HorizontalLayout {
+        padding: 10px;
+        spacing: 10px;
+
+        VerticalLayout {
+            horizontal-stretch: 1;
+            spacing: 8px;
+
+            HorizontalLayout {
+                spacing: 8px;
+                KpiCard { label: "TIEMPO"; value: root.sim-time-text; accent: #89b4fa; }
+                KpiCard { label: "EN ALERTA"; value: root.alerted-agents + " / " + root.total-agents; accent: #f9e2af; }
+                KpiCard { label: "EVACUADOS"; value: root.evacuated-agents + " (" + Math.round(root.evacuated-agents * 100 / root.total-agents) + "%)"; accent: #a6e3a1; }
+                KpiCard { label: "CAÍDOS"; value: root.fallen-agents; accent: #fab387; }
+                KpiCard { label: "VÍCTIMAS (FED)"; value: root.incapacitated-agents; accent: #f38ba8; }
+                KpiCard { label: "ASET / RSET"; value: root.aset-rset-text; accent: #cba6f7; }
+            }
+
+            Rectangle {
+                vertical-stretch: 1;
+                background: #181825;
+                border-radius: 8px;
+                border-width: 1px;
+                border-color: #45475a;
+                clip: true;
+
+                Image {
+                    width: 100%;
+                    height: 100%;
+                    source: root.canvas-frame;
+                    image-fit: fill;
+                }
+
+                TouchArea {
+                    width: 100%;
+                    height: 100%;
+                    clicked => {
+                        root.canvas-clicked(
+                            self.mouse-x / 1px,
+                            self.mouse-y / 1px,
+                            self.width / 1px,
+                            self.height / 1px
+                        );
+                    }
+                }
+            }
+
+            Rectangle {
+                height: 38px;
+                background: #181825;
+                border-radius: 6px;
+                border-width: 1px;
+                border-color: #313244;
+
+                HorizontalLayout {
+                    padding-left: 12px;
+                    padding-right: 12px;
+                    spacing: 12px;
+                    alignment: space-between;
+
+                    Text {
+                        text: root.status-text;
+                        color: #a6e3a1;
+                        font-size: 12px;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+
+                    Text {
+                        text: "Cian+Borde Blanco: Brigadista | Azul: Adulto | Amarillo: Niño | Lavanda: Mayor";
+                        color: #a6adc8;
+                        font-size: 11px;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+
+        // PANEL DERECHO REESTRUCTURADO Y VISUAL
+        Rectangle {
+            width: 350px;
+            background: #181825;
+            border-radius: 8px;
+            border-width: 1px;
+            border-color: #313244;
+
+            VerticalLayout {
+                padding: 12px;
+                spacing: 7px;
+                alignment: start;
+
+                Text {
+                    text: "CONTROL LABERINTO + GRAFO 2D";
+                    color: #89b4fa;
+                    font-size: 14px;
+                    font-weight: 800;
+                }
+
+                HorizontalLayout {
+                    spacing: 6px;
+                    Button {
+                        text: root.is-running ? "⏸ Pausar" : "▶ Iniciar (60 FPS)";
+                        primary: true;
+                        horizontal-stretch: 1;
+                        clicked => { root.toggle-running(); }
+                    }
+                    Button {
+                        text: "↺ Reiniciar";
+                        horizontal-stretch: 1;
+                        clicked => { root.reset-building(); }
+                    }
+                }
+
+                ComboBox {
+                    model: [
+                        "1. Con Vínculos y Comunicación",
+                        "2. Individualista (Sin Vínculos)",
+                        "3. 10% Brigadistas + Extintor",
+                        "4. Pánico 80% + Doble Flashover"
+                    ];
+                    current-index: 0;
+                    selected => { root.load-preset(self.current-index); }
+                }
+
+                HorizontalLayout {
+                    spacing: 6px;
+                    ComboBox {
+                        horizontal-stretch: 1;
+                        model: ["3 Pisos", "Piso 0", "Piso 1", "Piso 2"];
+                        current-index: 0;
+                        selected => {
+                            root.view-mode = self.current-index;
+                            root.request-redraw();
+                        }
+                    }
+                    ComboBox {
+                        horizontal-stretch: 1;
+                        model: ["Clic: Fuego", "Clic: Puerta", "Clic: Agente"];
+                        current-index: 0;
+                        selected => { root.active-tool = self.current-index; }
+                    }
+                }
+                Text {
+                    text: "Aforo / Cantidad de Personas: " + Math.round(root.population-slider);
+                    color: #a6e3a1;
+                    font-size: 11px;
+                    font-weight: 700;
+                }
+
+                Slider {
+                    minimum: 40.0;
+                    maximum: 400.0;
+                    value <=> root.population-slider;
+                    released => { root.change-population(); }
+                }
+
+                Text {
+                    text: "Brigadistas: " + Math.round(root.trained-slider) + "%   |   Pánico: " + Math.round(root.panic-slider) + "%";
+                    color: #cdd6f4;
+                    font-size: 11px;
+                }
+
+                HorizontalLayout {
+                    spacing: 6px;
+                    Slider {
+                        minimum: 0.0;
+                        maximum: 100.0;
+                        value <=> root.trained-slider;
+                        changed => { root.update-parameters(); }
+                    }
+                    Slider {
+                        minimum: 0.0;
+                        maximum: 100.0;
+                        value <=> root.panic-slider;
+                        changed => { root.update-parameters(); }
+                    }
+                }
+
+                CheckBox {
+                    text: "Vínculos Familiares / Amigos Activos";
+                    checked <=> root.enable-social;
+                    toggled => { root.update-parameters(); }
+                }
+
+                CheckBox {
+                    text: "Comunicación Inter-Agente (2 saltos)";
+                    checked <=> root.enable-comm;
+                    toggled => { root.update-parameters(); }
+                }
+
+                CheckBox {
+                    text: "Alarma Global (Evacúan Todos)";
+                    checked <=> root.global-alarm;
+                    toggled => {
+                        root.update-parameters();
+                        root.request-redraw();
+                    }
+                }
+
+                CheckBox {
+                    text: "Ver Grafo Térmico sobre el Laberinto";
+                    checked <=> root.show-graph;
+                    toggled => { root.request-redraw(); }
+                }
+
+                Rectangle { height: 1px; background: #313244; }
+
+                // INSPECTOR VISUAL DE AGENTES Y BRIGADISTAS
+                HorizontalLayout {
+                    alignment: space-between;
+                    Text {
+                        text: "INSPECTOR DE AGENTES / BRIGADA";
+                        color: #f9e2af;
+                        font-size: 11px;
+                        font-weight: 700;
+                        vertical-alignment: center;
+                    }
+                    Button {
+                        text: "🔍 Sig. Brigadista";
+                        clicked => { root.next-warden(); }
+                    }
+                }
+
+                Rectangle {
+                    height: 118px;
+                    background: #11111b;
+                    border-radius: 6px;
+                    border-width: 1px;
+                    border-color: #45475a;
+
+                    VerticalLayout {
+                        padding: 8px;
+                        spacing: 4px;
+
+                        Text {
+                            text: root.inspector-text;
+                            color: #cdd6f4;
+                            font-size: 10.5px;
+                            wrap: word-wrap;
+                        }
+
+                        Text {
+                            text: "Verde: Salud (1-FED) | Rojo: Pánico | Azul: Velocidad | Oro: Rescates";
+                            color: #a6adc8;
+                            font-size: 9px;
+                        }
+
+                        Image {
+                            height: 38px;
+                            width: 100%;
+                            source: root.inspector-bars-frame;
+                            image-fit: fill;
+                        }
+                    }
+                }
+
+                HorizontalLayout {
+                    alignment: space-between;
+                    Text { text: "CURVA DE EVACUACIÓN (0-100%)"; color: #cdd6f4; font-size: 11px; font-weight: 700; }
+                    Text { text: "Verde: Salieron | Azul: Alerta | Rojo: FED"; color: #a6adc8; font-size: 9.5px; }
+                }
+
+                Rectangle {
+                    vertical-stretch: 1;
+                    min-height: 120px;
+                    background: #11111b;
+                    border-radius: 6px;
+                    border-width: 1px;
+                    border-color: #45475a;
+                    clip: true;
+
+                    Image {
+                        width: 100%;
+                        height: 100%;
+                        source: root.chart-frame;
+                        image-fit: fill;
+                    }
+                }
+            }
+        }
+    }
+}

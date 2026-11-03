@@ -1,0 +1,65 @@
+// Leyenda: # = Muro, . = Habitación, C = Pasillo, D = Puerta (30s), F = Cortafuegos (120s)
+//          S = Escalera, V = Ascensor, O = Columna, A = Alarma (sin colisión), E = Extintor (sin colisión), X = Salida
+
+=== FLOOR 0 ===
+####################################
+#SSSS#......#CCCCCACCCC#.....#.....#
+#SSSS#......#CCCCCCCCCC#.....#.....#
+#SSSS#......#CCCCCECCCC#.....#.....#
+###F##......#CCCOOOOOCC#.....#.....#
+#CCCC#......#CCCOOOOOCC#.....#.....#
+#CCCC####D###CCCOOOOOCC###D#####D###
+#CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC#
+#CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC#
+#CCCCACCCCCCCCCCCCCCCCCCCCCCCACCCCC#
+#######CC###D######D#######D###CCCC#
+#.....#CC#XXXXXXXXXXXXXXXXXXXX#CCCC#
+#.....DCC#XXXXXXXXXXXXXXXXXXXX#CCCC#
+#.....#CC#XXXXXXXXXXXXXXXXXXXX##F###
+#.....#CC#XXXXXXXXXXXXXXXXXXXX#SSSS#
+#.....#CCDXXXXXXXXXXXXXXXXXXXX#SSSS#
+#.....#CC#XXXXXXXXXXXXXXXXXXXX#SSSS#
+##########XXXXXXXXXXXXXXXXXXXX######
+
+=== FLOOR 1 ===
+####################################
+#SSSS#......#CCCCCCCCCC#.....#.....#
+#SSSS#......#CCCCCCCCCC#.....#.....#
+#SSSS#......#CCCCCCCCCC#.....#.....#
+###F##......#CCC##D##CC#.....#.....#
+#CCCC#......#CCC#...#CC#.....#.....#
+#CCCC####D###CCC#...#CC###D#####D###
+#CCCCCCCCCCCCCCC#..E#CCCCCCCCCCCCCC#
+#CCCCCCCCCCCCCCC#...#CCCCCCCCCCCCCC#
+#CCCCCCCCCCCCACC#...#CCACCCCCCCCCCC#
+#######CE#############D#####D##ECCC#
+#.....#CC#....#..........#....#CCCC#
+#.....DCC#....#..........#....#CCCC#
+#.....#CC#....#..........#....##F###
+#.....#CC#....#..........#....#SSSS#
+#.....#CCD....#..........D....#SSSS#
+#.....#CC#....#..........#....#SSSS#
+####################################
+
+=== FLOOR 2 ===
+####################################
+#SSSS#......#CCCCCACCCC#.....#.....#
+#SSSS#.....E#CCCCCCCCCC#.....#.....#
+#SSSS#......#CCCCCCCCCC#.....#....E#
+###F##......#CCC##D##CC#.....#.....#
+#CCCC#......#CCC#...#CC#.....#.....#
+#CCCC####D###CCC#...#CC###D#####D###
+#CCCCCCCCCCCCCCC#...#CCCCCCCCCCCACC#
+#CCCCCCCCCCCCCCC#...#CCCCCCCCCCCCCC#
+#CACCCCCCCCCCCEC#...#CCCCCCCCCCCCCC#
+#######CC#############D#####D##CCCC#
+#.....#CC#....#..........#....#CCCC#
+#.....DCC#....#..........#....#CCCC#
+#.....#CC#....#..........#....##F###
+#.....#CC#....#..........#....#SSSS#
+#.....#CCD....#..........D....#SSSS#
+#.....#CC#....#..........#....#SSSS#
+####################################
+
+
+
