@@ -1,0 +1,42 @@
+
+name: Build Windows
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Descargar proyecto
+        uses: actions/checkout@v4
+
+      - name: Instalar Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Compilar aplicación
+        run: cargo build --release
+
+      - name: Preparar distribución
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist
+
+          Get-ChildItem target/release -Filter *.exe |
+            Copy-Item -Destination dist
+
+          if (Test-Path assets) {
+            Copy-Item assets dist/assets -Recurse
+          }
+
+          Compress-Archive -Path dist/* `
+            -DestinationPath simulador-windows-x64.zip
+
+      - name: Publicar ejecutable
+        uses: actions/upload-artifact@v4
+        with:
+          name: simulador-windows-x64
+          path: simulador-windows-x64.zip
