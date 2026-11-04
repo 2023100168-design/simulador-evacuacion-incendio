@@ -40,6 +40,13 @@ pub fn step_psychology_and_physiology(
             continue;
         }
 
+        if agents[i].fall_immunity_s > 0.0 {
+            agents[i].fall_immunity_s = (agents[i].fall_immunity_s - dt).max(0.0);
+        }
+        if agents[i].rescue_cooldown_s > 0.0 {
+            agents[i].rescue_cooldown_s = (agents[i].rescue_cooldown_s - dt).max(0.0);
+        }
+
         let cell_id = agents[i].current_cell;
         let cell = &building.cells[cell_id];
 
@@ -62,10 +69,12 @@ pub fn step_psychology_and_physiology(
         match agents[i].action_state {
             AgentActionState::Normal => {
                 if global_alarm || sees_local_hazard || active_evac_in_cell[cell_id] > 0 {
-                    let reaction_delay = if agents[i].role == MacesRole::TrainedLeader {
+                    let reaction_delay =
+                    if agents[i].role == MacesRole::TrainedLeader && config.enable_wardens {
                         rng.gen_range(0.2..0.5)
                     } else {
-                        rng.gen_range(0.8..2.6) * (1.0 + agents[i].profile.cognitive_vulnerability())
+                        rng.gen_range(0.7..2.4)
+                        * (1.0 + agents[i].profile.cognitive_vulnerability())
                     };
                     agents[i].reaction_delay_assigned_s = reaction_delay;
                     agents[i].alert_start_time_s = Some(sim_time_s);
@@ -73,7 +82,7 @@ pub fn step_psychology_and_physiology(
                         timer_s: reaction_delay,
                     };
                     if agents[i].is_panic_prone {
-                        agents[i].panic_level = rng.gen_range(6.2..9.2);
+                        agents[i].panic_level = rng.gen_range(6.0..8.8);
                         agents[i].personal_space_xi = -0.05;
                     }
                 }
@@ -81,19 +90,22 @@ pub fn step_psychology_and_physiology(
             AgentActionState::Reacting { ref mut timer_s } => {
                 *timer_s -= dt;
                 if *timer_s <= 0.0 {
-                    // Al terminar de reaccionar: los brigadistas patrullan su piso; los civiles primero buscan salir al pasillo (Meta 1)
-                    if agents[i].role == MacesRole::TrainedLeader && agents[i].floor > 0 {
-                        agents[i].action_state = AgentActionState::SweepingFloor { waypoint_idx: 0 };
-                    } else if cell.kind == CellKind::Room {
-                        agents[i].action_state = AgentActionState::ExitingRoomToCorridor;
-                    } else {
-                        agents[i].action_state = AgentActionState::Evacuating;
-                    }
+                    if agents[i].role == MacesRole::TrainedLeader
+                        && config.enable_wardens
+                        && agents[i].floor > 0
+                        {
+                            agents[i].action_state =
+                            AgentActionState::SweepingFloor { waypoint_idx: 0 };
+                        } else if cell.kind == CellKind::Room {
+                            agents[i].action_state = AgentActionState::ExitingRoomToCorridor;
+                        } else {
+                            agents[i].action_state = AgentActionState::Evacuating;
+                        }
                 }
             }
             AgentActionState::PanickedFrozen { ref mut timer_s } => {
                 *timer_s -= dt;
-                if *timer_s <= 0.0 {
+                if !config.enable_panic_freeze || *timer_s <= 0.0 {
                     agents[i].action_state = if cell.kind == CellKind::Room {
                         AgentActionState::ExitingRoomToCorridor
                     } else {
@@ -105,7 +117,7 @@ pub fn step_psychology_and_physiology(
                 ref mut timer_s, ..
             } => {
                 *timer_s -= dt;
-                if *timer_s <= 0.0 {
+                if !config.enable_panic_freeze || *timer_s <= 0.0 {
                     agents[i].action_state = if cell.kind == CellKind::Room {
                         AgentActionState::ExitingRoomToCorridor
                     } else {
@@ -120,28 +132,28 @@ pub fn step_psychology_and_physiology(
             continue;
         }
 
-        // Propagación del pánico
         let density = cell.density();
         let mut panic_delta = 0.0_f32;
         if sees_local_hazard {
-            panic_delta += 1.35 * dt;
+            panic_delta += 1.25 * dt;
         }
         if global_alarm {
-            panic_delta += 0.22 * dt;
+            panic_delta += 0.18 * dt;
         }
         if (active_panicked_in_cell[cell_id] >= 2 || density > 2.6)
             && rng.gen_range(0.0..1.0) < config.panic_propagation_pct
             {
-                panic_delta += 0.95 * dt;
+                panic_delta += 0.85 * dt;
             }
             if matches!(agents[i].action_state, AgentActionState::FollowingWarden { .. }) {
-                panic_delta -= 1.5 * dt;
+                panic_delta -= 1.8 * dt;
             }
 
             agents[i].panic_level = (agents[i].panic_level + panic_delta).clamp(0.0, 10.0);
 
-        // FALLO COGNITIVO POR PÁNICO Y PERFIL DEMOGRÁFICO (Niños, Ancianos y Civiles en pánico se bloquean o deambulan)
-        if agents[i].role != MacesRole::TrainedLeader
+        // Fallo cognitivo por pánico (solo si enable_panic_freeze está marcado en la UI)
+        if config.enable_panic_freeze
+            && (agents[i].role != MacesRole::TrainedLeader || !config.enable_wardens)
             && !agents[i].guided_by_warden
             && !matches!(
                 agents[i].action_state,
@@ -152,20 +164,18 @@ pub fn step_psychology_and_physiology(
             )
             && cell.kind != CellKind::Exit
             && cell.kind != CellKind::Stairwell
-            && agents[i].panic_level >= 6.2
+            && agents[i].panic_level >= 6.4
             {
                 let vuln = agents[i].profile.cognitive_vulnerability();
-                let breakdown_prob = vuln * ((agents[i].panic_level - 5.5) / 4.5) * 0.28 * dt;
+                let breakdown_prob = vuln * ((agents[i].panic_level - 5.5) / 4.5) * 0.22 * dt;
                 if rng.gen_range(0.0..1.0) < breakdown_prob {
                     if rng.gen_bool(0.45) {
-                        // Se queda paralizado por pánico esperando que un brigadista o familiar lo guíe
                         agents[i].action_state = AgentActionState::PanickedFrozen {
-                            timer_s: rng.gen_range(3.0..6.5),
+                            timer_s: rng.gen_range(2.8..5.5),
                         };
                     } else {
-                        // Camina desorientado sin pensar bien
                         agents[i].action_state = AgentActionState::PanickedWandering {
-                            timer_s: rng.gen_range(2.5..5.0),
+                            timer_s: rng.gen_range(2.2..4.2),
                             angle: rng.gen_range(0.0..std::f32::consts::TAU),
                         };
                     }
@@ -173,9 +183,10 @@ pub fn step_psychology_and_physiology(
                 }
             }
 
-            // Altruismo: Ayudar a caídos
+            // Altruismo: Ayudar a caídos (con Cooldown e Inmunidad post-caída para evitar bucles infinitos)
             let in_stair_or_exit = matches!(cell.kind, CellKind::Stairwell | CellKind::Exit);
-            let room_safe_for_rescue = !in_stair_or_exit
+            let room_safe_for_rescue = config.enable_helping_fallen
+            && !in_stair_or_exit
             && cell.temperature_c < 135.0
             && cell.smoke_opacity < 0.45
             && agents[i].fed_dose < 0.35
@@ -193,15 +204,20 @@ pub fn step_psychology_and_physiology(
                     || !room_safe_for_rescue
                     || attempt_timeout_s <= 0.0
                     {
+                        agents[i].rescue_cooldown_s = 5.0; // No volver a detenerse inmediatamente si abortó
                         agents[i].action_state = AgentActionState::Evacuating;
                     } else {
                         let dist = (agents[i].x - agents[target_agent_id].x)
                         .hypot(agents[i].y - agents[target_agent_id].y);
-                        if dist < 1.25 {
+                        if dist < 1.35 {
                             timer_s -= dt;
                             if timer_s <= 0.0 {
                                 agents[target_agent_id].is_fallen = false;
                                 agents[target_agent_id].fallen_timer_s = 0.0;
+                                // Otorgar 6 segundos de inmunidad a caídas tanto al rescatado como al rescatista
+                                agents[target_agent_id].fall_immunity_s = 6.0;
+                                agents[i].fall_immunity_s = 6.0;
+                                agents[i].rescue_cooldown_s = 6.5;
                                 agents[i].helped_fallen_count += 1;
                                 agents[i].action_state = AgentActionState::Evacuating;
                             } else {
@@ -221,8 +237,10 @@ pub fn step_psychology_and_physiology(
                     }
             } else if agents[i].action_state == AgentActionState::Evacuating
                 && !agents[i].is_fallen
+                && agents[i].rescue_cooldown_s <= 0.0
                 && room_safe_for_rescue
                 {
+                    // Verificar que ningún otro agente esté ya ayudando a ese mismo caído (máximo 1 ayudante por caído)
                     let mut priority_fallen = None;
                     if config.enable_social_bonds {
                         for &bond_id in &agents[i].social_bonds {
@@ -230,8 +248,17 @@ pub fn step_psychology_and_physiology(
                                 && agents[bond_id].is_fallen
                                 && agents[bond_id].action_state != AgentActionState::Incapacitated
                                 {
-                                    priority_fallen = Some(bond_id);
-                                    break;
+                                    let already_helped = agents.iter().any(|other| {
+                                        matches!(
+                                            other.action_state,
+                                            AgentActionState::HelpingFallen { target_agent_id, .. }
+                                            if target_agent_id == bond_id
+                                        )
+                                    });
+                                    if !already_helped {
+                                        priority_fallen = Some(bond_id);
+                                        break;
+                                    }
                                 }
                         }
                     }
@@ -239,19 +266,26 @@ pub fn step_psychology_and_physiology(
                     if priority_fallen.is_none()
                         && agents[i].profile.can_use_extinguisher()
                         && agents[i].panic_level < 5.2
-                        && density < 1.5
+                        && density < 1.6
                         {
                             for &occ_id in &cell.occupant_ids {
                                 if occ_id != i
                                     && agents[occ_id].is_fallen
                                     && agents[occ_id].action_state != AgentActionState::Incapacitated
+                                    && (agents[i].x - agents[occ_id].x).hypot(agents[i].y - agents[occ_id].y)
+                                    < 1.9
                                     {
-                                        if (agents[i].x - agents[occ_id].x).hypot(agents[i].y - agents[occ_id].y)
-                                            < 2.0
-                                            {
-                                                priority_fallen = Some(occ_id);
-                                                break;
-                                            }
+                                        let already_helped = agents.iter().any(|other| {
+                                            matches!(
+                                                other.action_state,
+                                                AgentActionState::HelpingFallen { target_agent_id, .. }
+                                                if target_agent_id == occ_id
+                                            )
+                                        });
+                                        if !already_helped {
+                                            priority_fallen = Some(occ_id);
+                                            break;
+                                        }
                                     }
                             }
                         }
@@ -259,8 +293,8 @@ pub fn step_psychology_and_physiology(
                         if let Some(target_id) = priority_fallen {
                             agents[i].action_state = AgentActionState::HelpingFallen {
                                 target_agent_id: target_id,
-                                timer_s: 0.65,
-                                attempt_timeout_s: 2.0,
+                                timer_s: 0.55,
+                                attempt_timeout_s: 1.8,
                             };
                         }
                 }

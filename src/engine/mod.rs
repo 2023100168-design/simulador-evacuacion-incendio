@@ -104,6 +104,17 @@ impl SimulationEngine {
         self.selected_agent_id = Some(wardens[0]);
     }
 
+    pub fn select_next_agent(&mut self) {
+        if self.agents.is_empty() {
+            return;
+        }
+        let next = self
+        .selected_agent_id
+        .map(|id| (id + 1) % self.agents.len())
+        .unwrap_or(0);
+        self.selected_agent_id = Some(next);
+    }
+
     pub fn format_inspector_header(&self) -> String {
         if let Some(aid) = self.selected_agent_id {
             if let Some(a) = self.agents.get(aid) {
@@ -470,6 +481,9 @@ pub fn spawn_population(building: &LoadedBuilding, config: &SimulationConfig) ->
                     swept_cells: vec![cell_id],
                     mental_map,
                     dfs_stack: vec![cell_id],
+                    fall_immunity_s: 0.0,
+                    rescue_cooldown_s: 0.0,
+                    escort_slots: Vec::new(),
         });
     }
 

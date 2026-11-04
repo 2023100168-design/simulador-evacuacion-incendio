@@ -41,14 +41,13 @@ impl DemographicProfile {
         }
     }
 
-    /// Probabilidad base de cometer errores de ruta o entrar en shock bajo pánico
     pub fn cognitive_vulnerability(&self) -> f32 {
         match self {
-            Self::Adult => 0.18,
-            Self::YoungAdult => 0.22,
-            Self::Child => 0.65,
-            Self::Elderly => 0.48,
-            Self::Impaired => 0.45,
+            Self::Adult => 0.15,
+            Self::YoungAdult => 0.18,
+            Self::Child => 0.60,
+            Self::Elderly => 0.45,
+            Self::Impaired => 0.40,
         }
     }
 
@@ -56,21 +55,20 @@ impl DemographicProfile {
         let d_clamped = density.clamp(0.0, 3.8);
         let speed = if on_stairs {
             let v0_esc = self.base_stair_speed();
-            // En escaleras con alta densidad (> 2.2 pers/m²), el flujo se frena drásticamente por aglomeración
-            let bottleneck_factor = if d_clamped > 2.0 { 0.55 } else { 1.0 };
-            (v0_esc * (1.0 - SFPE_DENSITY_A * d_clamped) * bottleneck_factor).max(0.10)
+            let bottleneck_factor = if d_clamped > 2.2 { 0.60 } else { 1.0 };
+            (v0_esc * (1.0 - SFPE_DENSITY_A * d_clamped) * bottleneck_factor).max(0.14)
         } else {
             let v0 = self.base_flat_speed();
             if d_clamped <= SFPE_FREE_FLOW_DENSITY {
                 v0
             } else {
                 let k = v0 / 0.85;
-                (k * (1.0 - SFPE_DENSITY_A * d_clamped)).max(0.15)
+                (k * (1.0 - SFPE_DENSITY_A * d_clamped)).max(0.18)
             }
         };
 
         if in_panic && !on_stairs {
-            speed * 1.25
+            speed * 1.22
         } else {
             speed
         }
@@ -79,7 +77,7 @@ impl DemographicProfile {
     pub fn body_radius(&self) -> f32 {
         match self {
             Self::Child => 0.16,
-            _ => 0.21,
+            _ => 0.20,
         }
     }
 
@@ -142,27 +140,21 @@ pub enum AgentActionState {
     TriggeringAlarm { station_id: usize },
     FetchingExtinguisher { ext_id: usize, fire_cell: usize },
     FightingFire { fire_cell: usize, remaining_charge_s: f32 },
-    /// Meta 1: Salir de la habitación hacia el pasillo principal
     ExitingRoomToCorridor,
-    /// Meta 2: Recorrer el pasillo buscando a sus familiares antes de ir a las escaleras
-    SeekingFamilyInCorridor { patrol_waypoint_idx: usize },
-    /// Fallo cognitivo por pánico: Congelado en shock (esperando ayuda o brigadista)
+    SeekingFamilyInCorridor {
+        patrol_waypoint_idx: usize,
+        search_timer_s: f32,
+    },
     PanickedFrozen { timer_s: f32 },
-    /// Fallo cognitivo por pánico: Deambulando sin rumbo por desorientación
     PanickedWandering { timer_s: f32, angle: f32 },
-    /// Brigadista patrullando el piso en busca de personas en pánico o rezagadas
     SweepingFloor { waypoint_idx: usize },
-    /// Brigadista guiando un grupo de rescatados hasta la entrada de la escalera óptima
     EscortingToStairs { stair_cell_id: usize },
-    /// Civil siguiendo directamente al Brigadista ("¡Sígueme!")
-    FollowingWarden { warden_id: usize },
-    /// Ayudando a levantar a un caído
+    FollowingWarden { warden_id: usize, slot_idx: u8 },
     HelpingFallen {
         target_agent_id: usize,
         timer_s: f32,
         attempt_timeout_s: f32,
     },
-    /// Meta 3 y 4: Ir a las escaleras, bajar y salir a la calle
     Evacuating,
     Evacuated,
     Incapacitated,
@@ -177,14 +169,14 @@ impl AgentActionState {
             Self::FetchingExtinguisher { .. } => "Buscando Extintor",
             Self::FightingFire { .. } => "Combatiendo Fuego",
             Self::ExitingRoomToCorridor => "Meta 1: Saliendo al Pasillo",
-            Self::SeekingFamilyInCorridor { .. } => "Meta 2: Buscando Familia en Pasillo",
-            Self::PanickedFrozen { .. } => "En Shock (Paralizado por Pánico)",
+            Self::SeekingFamilyInCorridor { .. } => "Meta 2: Buscando Familia",
+            Self::PanickedFrozen { .. } => "En Shock (Paralizado)",
             Self::PanickedWandering { .. } => "Desorientado por Pánico",
-            Self::SweepingFloor { .. } => "Brigadista: Patrullando Piso",
-            Self::EscortingToStairs { .. } => "Brigadista: Guiando a Escalera",
-            Self::FollowingWarden { .. } => "Siguiendo a Brigadista",
+            Self::SweepingFloor { .. } => "Brigadista: Buscando Rezagados",
+            Self::EscortingToStairs { .. } => "Brigadista: Escoltando (Máx 2)",
+            Self::FollowingWarden { .. } => "En Fila tras Brigadista",
             Self::HelpingFallen { .. } => "Levantando a Caído",
-            Self::Evacuating => "Meta 3: Evacuando a Escalera/Salida",
+            Self::Evacuating => "Meta 3: Evacuando a Salida",
             Self::Evacuated => "Evacuado (A Salvo)",
             Self::Incapacitated => "Incapacitado (FED Crítico)",
         }
@@ -214,6 +206,8 @@ pub struct Agent {
     pub can_fall_easily: bool,
     pub is_fallen: bool,
     pub fallen_timer_s: f32,
+    pub fall_immunity_s: f32,    // Evita que vuelva a caer inmediatamente al levantarse
+    pub rescue_cooldown_s: f32,  // Evita que un rescatista quede atrapado en bucle ayudando caídos
     pub stuck_timer_s: f32,
     pub unstuck_waypoint: Option<(f32, f32, f32)>,
     pub stop_shaking_ticks: i32,
@@ -222,7 +216,8 @@ pub struct Agent {
     pub group_leader_id: Option<usize>,
     pub social_bonds: Vec<usize>,
     pub family_reunited: bool,
-    pub guided_by_warden: bool, // Si un brigadista ya le indicó la ruta óptima
+    pub guided_by_warden: bool,
+    pub escort_slots: Vec<usize>, // Máximo 2 personas escoltadas simultáneamente por el brigadista
     pub stair_lane: u8,
     pub stair_progress: f32,
     pub reaction_delay_assigned_s: f32,

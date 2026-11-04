@@ -1,6 +1,6 @@
 use crate::building_loader::{LoadedBuilding, TILE_SIZE_M};
 use crate::config::SimulationConfig;
-use crate::model::agent::{Agent, AgentActionState, CellMemory};
+use crate::model::agent::{Agent, AgentActionState, CellMemory, MacesRole};
 use crate::model::topology::CellKind;
 use rand::Rng;
 
@@ -15,6 +15,7 @@ struct AgentSnapshot {
     vy: f32,
     radius: f32,
     is_fallen: bool,
+    guided: bool,
     active: bool,
 }
 
@@ -56,6 +57,7 @@ pub fn step_hidac_physics(
          vy: a.vy,
          radius: a.profile.body_radius(),
          is_fallen: a.is_fallen,
+         guided: a.guided_by_warden || a.role == MacesRole::TrainedLeader,
          active: a.action_state != AgentActionState::Evacuated,
     })
     .collect();
@@ -75,12 +77,12 @@ pub fn step_hidac_physics(
             agents[i].fallen_timer_s -= dt;
             if agents[i].fallen_timer_s <= 0.0 {
                 agents[i].is_fallen = false;
+                agents[i].fall_immunity_s = 6.0; // 6s de inmunidad al levantarse para no volver a caer en bucle
             } else {
                 continue;
             }
         }
 
-        // Actualizar la celda actual según la casilla del laberinto
         if let Some(real_cid) = building.cell_at(agents[i].floor, agents[i].x, agents[i].y) {
             agents[i].current_cell = real_cid;
             agents[i]
@@ -99,7 +101,7 @@ pub fn step_hidac_physics(
             agents[i].active_evac_time_s += dt;
         }
 
-        // 1. SALIDA INMEDIATA: si está en Planta Baja y pisa o roza una casilla 'X' (Exit), evacúa al instante
+        // 1. SALIDA INMEDIATA al pisar o tocar una celda Exit
         if !is_routine_mode {
             if building.cells[curr_cell_id].kind == CellKind::Exit {
                 agents[i].action_state = AgentActionState::Evacuated;
@@ -136,7 +138,7 @@ pub fn step_hidac_physics(
             }
         }
 
-        // 2. DESCENSO POR ESCALERA EN 2 FILAS ORDENADAS (Pisos 1 y 2 -> Piso inferior)
+        // 2. DESCENSO POR ESCALERA EN 2 FILAS ORDENADAS
         if !is_routine_mode
             && building.cells[curr_cell_id].kind == CellKind::Stairwell
             && agents[i].floor > 0
@@ -145,7 +147,6 @@ pub fn step_hidac_physics(
                 let density = stair_cell.density();
                 let stair_speed = agents[i].profile.calculate_speed(density, true, false);
 
-                // Tramo de un piso al inferior (~3.8 metros)
                 agents[i].stair_progress += (stair_speed * dt) / 3.8;
                 agents[i].distance_traveled_m += stair_speed * dt;
 
@@ -176,7 +177,6 @@ pub fn step_hidac_physics(
                         agents[i].floor = next_floor;
 
                         if next_floor == 0 {
-                            // Al llegar a Planta Baja (Piso 0), colocarlo directamente cruzando la puerta de la escalera hacia el pasillo
                             let corridor_portal = building.cells[next_c]
                             .portals
                             .iter()
@@ -186,7 +186,6 @@ pub fn step_hidac_physics(
                             if let Some(p_out) = corridor_portal {
                                 let out_cell = p_out.other_cell(next_c).unwrap_or(next_c);
                                 agents[i].current_cell = out_cell;
-                                // Buscar una baldosa del pasillo pegada a la puerta F de la escalera
                                 let (pr, pc) = p_out.tile_rc;
                                 let mut spawn_pos = p_out.pos_a;
                                 for (nr, nc) in [
@@ -215,7 +214,6 @@ pub fn step_hidac_physics(
                                 agents[i].y = ny;
                             }
                         } else {
-                            // Si bajó del Piso 2 al Piso 1, continúa descendiendo por la caja de escaleras del Piso 1
                             agents[i].current_cell = next_c;
                             let (nx, ny) = building.cells[next_c].center();
                             agents[i].x = nx + lane_offset;
@@ -226,8 +224,8 @@ pub fn step_hidac_physics(
                 continue;
             }
 
-            // 3. DIRECCIÓN DESEADA SEGÚN LA META ACTUAL DEL AGENTE
-            let (mut goal_dir_x, mut goal_dir_y) = match agents[i].action_state {
+            // 3. DIRECCIÓN DESEADA SEGÚN LA META ACTUAL
+            let (goal_dir_x, goal_dir_y) = match agents[i].action_state {
                 AgentActionState::Normal | AgentActionState::Reacting { .. } => {
                     let c = &building.cells[curr_cell_id];
                     let v_mag = agents[i].vx.hypot(agents[i].vy);
@@ -256,26 +254,14 @@ pub fn step_hidac_physics(
                 ),
                 AgentActionState::SeekingFamilyInCorridor {
                     patrol_waypoint_idx,
+                    ..
                 } => {
-                    // Si el Jefe de Familia ya está en el pasillo, caminar por el laberinto hacia él; si es el Jefe, recorrer el pasillo buscando a los suyos
-                    let lid = agents[i].group_leader_id.unwrap_or(i);
-                    let target_pos = if lid != i
-                    && snapshots[lid].active
-                    && snapshots[lid].floor == agents[i].floor
-                    && building.cells[snapshots[lid].cell_id].kind == CellKind::Corridor
-                    {
-                        (snapshots[lid].x, snapshots[lid].y)
-                    } else if let Some(&bid) = agents[i].social_bonds.iter().find(|&&bid| {
-                        snapshots[bid].active && snapshots[bid].floor == agents[i].floor
-                    }) {
-                        (snapshots[bid].x, snapshots[bid].y)
+                    // Todos los miembros de la familia se dirigen al mismo waypoint fijo del pasillo (¡nunca en círculo!)
+                    let wps = &building.corridor_waypoints[agents[i].floor];
+                    let target_pos = if !wps.is_empty() {
+                        wps[patrol_waypoint_idx % wps.len()]
                     } else {
-                        let wps = &building.corridor_waypoints[agents[i].floor];
-                        if !wps.is_empty() {
-                            wps[patrol_waypoint_idx % wps.len()]
-                        } else {
-                            (agents[i].x, agents[i].y)
-                        }
+                        building.cells[curr_cell_id].center()
                     };
                     building.direction_towards_point(
                         agents[i].floor,
@@ -286,13 +272,14 @@ pub fn step_hidac_physics(
                     )
                 }
                 AgentActionState::SweepingFloor { waypoint_idx } => {
-                    // El brigadista va directo hacia el civil en pánico o perdido más cercano en su piso
+                    // El brigadista busca al civil SIN GUIAR más cercano en el piso
                     let mut priority_person = None;
                     let mut best_d = f32::INFINITY;
                     for other in &snapshots {
                         if other.active
                             && other.floor == agents[i].floor
                             && other.id != i
+                            && !other.guided
                             && building.cells[other.cell_id].kind != CellKind::Stairwell
                             && building.cells[other.cell_id].kind != CellKind::Exit
                             {
@@ -323,13 +310,53 @@ pub fn step_hidac_physics(
                     let (sx, sy) = building.cells[stair_cell_id].center();
                     building.direction_towards_point(agents[i].floor, agents[i].x, agents[i].y, sx, sy)
                 }
-                AgentActionState::FollowingWarden { warden_id } => building.direction_towards_point(
-                    agents[i].floor,
-                    agents[i].x,
-                    agents[i].y,
-                    snapshots[warden_id].x,
-                    snapshots[warden_id].y,
-                ),
+                AgentActionState::FollowingWarden {
+                    warden_id,
+                    slot_idx,
+                } => {
+                    let w = snapshots[warden_id];
+                    if config.enable_warden_line_formation {
+                        // Posicionarse DETRÁS del brigadista (opuesto a su vector de mirada POV) en fila india
+                        let w_vnorm = w.vx.hypot(w.vy);
+                        let (fwd_x, fwd_y) = if w_vnorm > 0.05 {
+                            (w.vx / w_vnorm, w.vy / w_vnorm)
+                        } else {
+                            (1.0, 0.0)
+                        };
+                        let trail_dist = 0.90 + (slot_idx as f32) * 0.85;
+                        let mut behind_x = w.x - fwd_x * trail_dist;
+                        let mut behind_y = w.y - fwd_y * trail_dist;
+                        building.resolve_maze_wall_collisions(
+                            agents[i].floor,
+                            &mut behind_x,
+                            &mut behind_y,
+                            0.22,
+                        );
+                        let d_to_slot = (behind_x - agents[i].x).hypot(behind_y - agents[i].y);
+                        if d_to_slot < 0.35 {
+                            // Si ya está formado en su puesto detrás del brigadista, imita el vector de avance del brigadista
+                            (fwd_x, fwd_y)
+                        } else if d_to_slot < 2.5 {
+                            ((behind_x - agents[i].x) / d_to_slot, (behind_y - agents[i].y) / d_to_slot)
+                        } else {
+                            building.direction_towards_point(
+                                agents[i].floor,
+                                agents[i].x,
+                                agents[i].y,
+                                behind_x,
+                                behind_y,
+                            )
+                        }
+                    } else {
+                        building.direction_towards_point(
+                            agents[i].floor,
+                            agents[i].x,
+                            agents[i].y,
+                            w.x,
+                            w.y,
+                        )
+                    }
+                }
                 AgentActionState::TriggeringAlarm { station_id } => building.direction_towards_point(
                     agents[i].floor,
                     agents[i].x,
@@ -360,9 +387,7 @@ pub fn step_hidac_physics(
                     (dx / l, dy / l)
                 }
                 AgentActionState::Evacuating => {
-                    // Los Brigadistas y quienes fueron guiados por ellos conocen la ruta óptima;
-                    // los demás usan el flujo ingenuo (generando aglomeración realista en la escalera principal)
-                    if agents[i].role == crate::model::agent::MacesRole::TrainedLeader
+                    if (agents[i].role == MacesRole::TrainedLeader && config.enable_wardens)
                         || agents[i].guided_by_warden
                         {
                             building.sample_flow_direction(
@@ -383,41 +408,30 @@ pub fn step_hidac_physics(
                 _ => (0.0, 0.0),
             };
 
-            // 4. Cohesión Familiar al caminar juntos hacia las escaleras
+            // 4. Sincronización de paso familiar (sin girar en círculos)
             let mut speed_social_mod = 1.0_f32;
             if config.enable_social_bonds
                 && agents[i].action_state == AgentActionState::Evacuating
                 && building.cells[curr_cell_id].kind == CellKind::Corridor
                 {
                     if let Some(lid) = agents[i].group_leader_id {
-                        if lid != i && snapshots[lid].active && snapshots[lid].floor == agents[i].floor {
-                            let dl = (snapshots[lid].x - agents[i].x).hypot(snapshots[lid].y - agents[i].y);
-                            if dl > 1.0 && dl < 5.5 {
-                                let lx = (snapshots[lid].x - agents[i].x) / dl;
-                                let ly = (snapshots[lid].y - agents[i].y) / dl;
-                                goal_dir_x = goal_dir_x * 0.68 + lx * 0.32;
-                                goal_dir_y = goal_dir_y * 0.68 + ly * 0.32;
-                                let n = goal_dir_x.hypot(goal_dir_y).max(1e-4);
-                                goal_dir_x /= n;
-                                goal_dir_y /= n;
-                            }
-                        } else if lid == i {
-                            // El Jefe de Familia adapta su velocidad al miembro más lento del grupo (ej. niño o abuelo)
+                        if lid == i {
                             for &bid in &agents[i].social_bonds {
                                 if snapshots[bid].active && snapshots[bid].floor == agents[i].floor {
-                                    let d = (snapshots[bid].x - agents[i].x)
-                                    .hypot(snapshots[bid].y - agents[i].y);
-                                    if d > 1.8 {
-                                        speed_social_mod = 0.68;
-                                        break;
-                                    }
+                                    if (snapshots[bid].x - agents[i].x)
+                                        .hypot(snapshots[bid].y - agents[i].y)
+                                        > 2.2
+                                        {
+                                            speed_social_mod = 0.72;
+                                            break;
+                                        }
                                 }
                             }
                         }
                     }
                 }
 
-                // 5. Interacción física entre agentes y cuellos de botella por pánico
+                // 5. Separación física y evasión tangencial
                 let cell_ref = &building.cells[curr_cell_id];
                 cell_ref
                 .spatial_grid
@@ -428,6 +442,10 @@ pub fn step_hidac_physics(
                     AgentActionState::HelpingFallen {
                         target_agent_id, ..
                     } => Some(target_agent_id),
+                    _ => None,
+                };
+                let warden_leader = match agents[i].action_state {
+                    AgentActionState::FollowingWarden { warden_id, .. } => Some(warden_id),
                     _ => None,
                 };
 
@@ -441,6 +459,11 @@ pub fn step_hidac_physics(
                     if other_id == agents[i].id || Some(other_id) == rescue_target {
                         continue;
                     }
+                    // Si el brigadista tiene a sus 2 escoltas detrás, no dejar que los escoltas lo empujen ni desvíen
+                    if agents[i].escort_slots.contains(&other_id) || Some(other_id) == warden_leader {
+                        continue;
+                    }
+
                     let other = snapshots[other_id];
                     if !other.active || other.floor != agents[i].floor {
                         continue;
@@ -456,13 +479,13 @@ pub fn step_hidac_physics(
 
                     if !other.is_fallen && dij < min_sep {
                         let overlap = min_sep - dij;
-                        let panic_push = if agents[i].panic_level >= 5.5 { 1.45 } else { 1.0 };
+                        let panic_push = if agents[i].panic_level >= 5.5 { 1.35 } else { 1.0 };
                         push_x += (-wx / dij) * overlap * panic_push;
                         push_y += (-wy / dij) * overlap * panic_push;
-                    } else if dij < 1.25 && (goal_dir_x * wx + goal_dir_y * wy) > 0.0 {
+                    } else if dij < 1.20 && (goal_dir_x * wx + goal_dir_y * wy) > 0.0 {
                         let tx = goal_dir_y;
                         let ty = -goal_dir_x;
-                        let w = ((1.25 - dij) / 1.25) * config.avoidance_weight * 0.45;
+                        let w = ((1.20 - dij) / 1.20) * config.avoidance_weight * 0.40;
                         tangent_x += tx * w;
                         tangent_y += ty * w;
                     }
@@ -481,9 +504,8 @@ pub fn step_hidac_physics(
                 .calculate_speed(cell_density, false, in_panic)
                 * speed_social_mod;
 
-                // Efecto "Rápido es Lento" (Faster-is-Slower) en cuellos de botella con pánico alto (>= 4 vecinos pegados)
                 if crowd_neighbors >= 4 && in_panic {
-                    base_speed *= 0.45;
+                    base_speed *= 0.50;
                 }
 
                 let speed = match agents[i].action_state {
@@ -500,32 +522,49 @@ pub fn step_hidac_physics(
                 agents[i].vx = agents[i].vx * (1.0 - blend) + desired_vx * blend;
                 agents[i].vy = agents[i].vy * (1.0 - blend) + desired_vy * blend;
 
-                let mut new_x = agents[i].x + agents[i].vx * dt + push_x * 0.38;
-                let mut new_y = agents[i].y + agents[i].vy * dt + push_y * 0.38;
+                let mut new_x = agents[i].x + agents[i].vx * dt + push_x * 0.35;
+                let mut new_y = agents[i].y + agents[i].vy * dt + push_y * 0.35;
 
-                building.resolve_maze_wall_collisions(agents[i].floor, &mut new_x, &mut new_y, ri * 0.85);
+                building.resolve_maze_wall_collisions(agents[i].floor, &mut new_x, &mut new_y, ri * 0.82);
 
+                // EYECTOR ANTI-MURO: Si un agente está atorado contra un muro o esquina por > 0.35s, proyectarlo al centro de la mejor baldosa libre vecina
                 let moved = (new_x - agents[i].x).hypot(new_y - agents[i].y);
                 if !is_routine_mode
                     && !matches!(agents[i].action_state, AgentActionState::PanickedFrozen { .. })
                     {
                         agents[i].distance_traveled_m += moved;
 
-                        if moved / dt.max(1e-4) < 0.16 {
+                        if moved / dt.max(1e-4) < 0.18 {
                             agents[i].stuck_timer_s += dt;
-                            if agents[i].stuck_timer_s > 0.45 {
-                                let jitter_ang =
-                                steer_y.atan2(steer_x) + if (i % 2) == 0 { 1.15 } else { -1.15 };
-                                let mut jx = new_x + jitter_ang.cos() * speed * dt;
-                                let mut jy = new_y + jitter_ang.sin() * speed * dt;
-                                building.resolve_maze_wall_collisions(
-                                    agents[i].floor,
-                                    &mut jx,
-                                    &mut jy,
-                                    ri * 0.85,
+                            if agents[i].stuck_timer_s > 0.35 {
+                                let cr = (new_y / TILE_SIZE_M).floor() as isize;
+                                let cc = (new_x / TILE_SIZE_M).floor() as isize;
+                                let mut best_tile_center = (
+                                    (cc as f32 + 0.5) * TILE_SIZE_M,
+                                                            (cr as f32 + 0.5) * TILE_SIZE_M,
                                 );
-                                new_x = jx;
-                                new_y = jy;
+                                let mut best_cost = f32::INFINITY;
+
+                                for dr in -1..=1 {
+                                    for dc in -1..=1 {
+                                        let nr = cr + dr;
+                                        let nc = cc + dc;
+                                        if building.is_tile_passable(agents[i].floor, nr, nc) {
+                                            let cost =
+                                            building.optimal_flow[agents[i].floor][nr as usize][nc as usize];
+                                            if cost < best_cost {
+                                                best_cost = cost;
+                                                best_tile_center = (
+                                                    (nc as f32 + 0.5) * TILE_SIZE_M,
+                                                                    (nr as f32 + 0.5) * TILE_SIZE_M,
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                                // Desplazar suavemente hacia el centro de la baldosa libre ganadora
+                                new_x = new_x * 0.45 + best_tile_center.0 * 0.55;
+                                new_y = new_y * 0.45 + best_tile_center.1 * 0.55;
                                 agents[i].stuck_timer_s = 0.0;
                             }
                         } else {
@@ -536,16 +575,17 @@ pub fn step_hidac_physics(
                     agents[i].x = new_x;
                     agents[i].y = new_y;
 
-                    // Caídas realistas por empujones cuando se aglomeran en puertas/escaleras con pánico
+                    // Caídas únicamente si fall_immunity_s == 0.0 (impide el bucle eterno de caídas)
                     let push_mag = push_x.hypot(push_y);
                     if !is_routine_mode
+                        && agents[i].fall_immunity_s <= 0.0
                         && (agents[i].can_fall_easily || in_panic)
-                        && push_mag > 0.14
-                        && crowd_neighbors >= 3
-                        && rng.gen_range(0..100) < (12 + (agents[i].panic_level as i32) * 3)
+                        && push_mag > 0.16
+                        && crowd_neighbors >= 4
+                        && rng.gen_range(0..100) < (8 + (agents[i].panic_level as i32) * 2)
                         {
                             agents[i].is_fallen = true;
-                            agents[i].fallen_timer_s = rng.gen_range(3.2..5.5);
+                            agents[i].fallen_timer_s = rng.gen_range(2.4..4.0);
                             agents[i].vx = 0.0;
                             agents[i].vy = 0.0;
                         }

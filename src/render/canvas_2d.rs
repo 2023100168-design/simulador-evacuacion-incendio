@@ -22,7 +22,7 @@ pub fn compute_viewports(
     let num_floors = building.floors.len().max(1);
     let gw = building.grid_width_m.max(1.0);
     let gh = building.grid_height_m.max(1.0);
-    let pad = 18.0;
+    let pad = 14.0;
 
     if view_mode > 0 && (view_mode as usize) <= num_floors {
         let f = (view_mode - 1) as usize;
@@ -38,16 +38,30 @@ pub fn compute_viewports(
             scale,
         }]
     } else {
-        let col_w = canvas_w / (num_floors as f32);
-        let scale_x = (col_w - 2.0 * pad) / gw;
-        let scale_y = (canvas_h - 2.0 * pad) / gh;
+        // Distribución automática en Grilla 2D (Cols x Rows) para ver bien 3, 4, 5, 6 o más pisos
+        let cols = if num_floors <= 2 {
+            num_floors
+        } else if num_floors <= 4 {
+            2
+        } else {
+            3
+        };
+        let rows = (num_floors + cols - 1) / cols;
+
+        let cell_w = canvas_w / (cols as f32);
+        let cell_h = canvas_h / (rows as f32);
+        let scale_x = (cell_w - 2.0 * pad) / gw;
+        let scale_y = (cell_h - 2.0 * pad) / gh;
         let scale = scale_x.min(scale_y).max(2.0);
 
         (0..num_floors)
         .map(|f| {
-            let col_start = (f as f32) * col_w;
-            let offset_x = col_start + (col_w - gw * scale) * 0.5;
-            let offset_y = (canvas_h - gh * scale) * 0.5;
+            let c_idx = f % cols;
+            let r_idx = f / cols;
+            let col_start = (c_idx as f32) * cell_w;
+            let row_start = (r_idx as f32) * cell_h;
+            let offset_x = col_start + (cell_w - gw * scale) * 0.5;
+            let offset_y = row_start + (cell_h - gh * scale) * 0.5;
             FloorViewport {
                 floor_idx: f,
                 offset_x,
@@ -436,7 +450,7 @@ pub fn render_simulation_frame(
                         }
 
                         // Enlace Celeste cuando sigue directamente a un Brigadista
-                        if let AgentActionState::FollowingWarden { warden_id } = agent.action_state {
+                        if let AgentActionState::FollowingWarden { warden_id, .. } = agent.action_state {
                             let w = &agents[warden_id];
                             if w.floor == vp.floor_idx {
                                 draw_line(

@@ -5,12 +5,14 @@ use crate::config::{
 use crate::model::agent::{Agent, AgentActionState, CellMemory, MacesRole};
 use crate::model::topology::CellKind;
 
+const MAX_WARDEN_ESCORT: usize = 2;
+
 pub fn step_maces_wayfinding(
     building: &mut LoadedBuilding,
     agents: &mut [Agent],
     config: &SimulationConfig,
     global_alarm: &mut bool,
-    _dt: f32,
+    dt: f32,
 ) {
     if *global_alarm {
         for ag in agents.iter_mut() {
@@ -47,7 +49,6 @@ pub fn step_maces_wayfinding(
             continue;
         }
 
-        // Detectar fuego cercano
         let mut detected_fire_cell = None;
         if building.cells[curr_cell].temperature_c > AMBIENT_TEMP_C + 20.0 {
             detected_fire_cell = Some(curr_cell);
@@ -143,130 +144,153 @@ pub fn step_maces_wayfinding(
             continue;
         }
 
-        // C. PROTOCOLO DE BRIGADISTAS: Patrullar piso -> Reclutar agentes en pánico -> Guiar a escalera -> Repetir
-        if agents[i].role == MacesRole::TrainedLeader {
-            let remaining_civilians_in_floor = agents.iter().any(|a| {
+        // C. PROTOCOLO SERIAL DE BRIGADISTAS: Máximo 2 personas a la vez -> Llevar a escalera -> Volver por más
+        if agents[i].role == MacesRole::TrainedLeader && config.enable_wardens {
+            // Limpiar slots de escolta si algún seguidor ya entró a la escalera o cambió de piso
+            let current_slots = agents[i].escort_slots.clone();
+            let mut valid_slots = Vec::new();
+            for sid in current_slots {
+                if agents[sid].floor == floor
+                    && matches!(
+                        agents[sid].action_state,
+                        AgentActionState::FollowingWarden { warden_id, .. } if warden_id == i
+                    )
+                    && building.cells[agents[sid].current_cell].kind != CellKind::Stairwell
+                    {
+                        valid_slots.push(sid);
+                    }
+            }
+            agents[i].escort_slots = valid_slots;
+
+            let unguided_civilians_in_floor = agents.iter().any(|a| {
                 a.id != i
                 && a.floor == floor
                 && a.role != MacesRole::TrainedLeader
+                && !a.guided_by_warden
                 && !matches!(
                     a.action_state,
-                    AgentActionState::Evacuated | AgentActionState::Incapacitated
+                    AgentActionState::Evacuated
+                    | AgentActionState::Incapacitated
+                    | AgentActionState::FollowingWarden { .. }
                 )
                 && building.cells[a.current_cell].kind != CellKind::Stairwell
                 && building.cells[a.current_cell].kind != CellKind::Exit
             });
 
-            if !remaining_civilians_in_floor || agents[i].fed_dose > 0.35 || agents[i].active_evac_time_s > 42.0 {
-                let mut follower_ids = Vec::new();
-                for (idx, ag) in agents.iter().enumerate() {
-                    if ag.action_state == (AgentActionState::FollowingWarden { warden_id: i }) {
-                        follower_ids.push(idx);
+            // Si ya no quedan civiles sin guiar en este piso o el brigadista corre peligro, evacúa
+            if (!unguided_civilians_in_floor && agents[i].escort_slots.is_empty())
+                || agents[i].fed_dose > 0.35
+                || agents[i].active_evac_time_s > 48.0
+                {
+                    let slots_to_free = agents[i].escort_slots.clone();
+                    for sid in slots_to_free {
+                        agents[sid].action_state = AgentActionState::Evacuating;
+                        agents[sid].guided_by_warden = true;
+                        agents[sid].family_reunited = true;
                     }
+                    agents[i].escort_slots.clear();
+                    agents[i].action_state = AgentActionState::Evacuating;
+                    continue;
                 }
-                for fid in follower_ids {
-                    agents[fid].action_state = AgentActionState::Evacuating;
-                    agents[fid].guided_by_warden = true;
-                    agents[fid].family_reunited = true;
-                }
-                agents[i].action_state = AgentActionState::Evacuating;
-                continue;
-            }
 
-            // Recolectar índices de agentes cercanos para reclutar sin violar las reglas de préstamo de Rust
-            let (wx, wy) = (agents[i].x, agents[i].y);
-            let mut recruits_to_update = Vec::new();
-            let mut follower_count = 0usize;
+                let (wx, wy) = (agents[i].x, agents[i].y);
 
-            for (idx, ag) in agents.iter().enumerate() {
-                if idx == i
-                    || ag.floor != floor
-                    || ag.role == MacesRole::TrainedLeader
-                    || matches!(
-                        ag.action_state,
-                        AgentActionState::Evacuated | AgentActionState::Incapacitated
-                    )
-                    {
-                        continue;
-                    }
+                match agents[i].action_state {
+                    AgentActionState::SweepingFloor { mut waypoint_idx } => {
+                        // Solo recluta si tiene espacio en sus 2 slots de escolta
+                        if agents[i].escort_slots.len() < MAX_WARDEN_ESCORT {
+                            let needed = MAX_WARDEN_ESCORT - agents[i].escort_slots.len();
+                            let mut candidates = Vec::new();
+                            for (idx, ag) in agents.iter().enumerate() {
+                                if idx != i
+                                    && ag.floor == floor
+                                    && ag.role != MacesRole::TrainedLeader
+                                    && !ag.guided_by_warden
+                                    && !matches!(
+                                        ag.action_state,
+                                        AgentActionState::Evacuated
+                                        | AgentActionState::Incapacitated
+                                        | AgentActionState::FollowingWarden { .. }
+                                    )
+                                    {
+                                        let d = (ag.x - wx).hypot(ag.y - wy);
+                                        if d < 3.4 {
+                                            candidates.push((idx, d));
+                                        }
+                                    }
+                            }
+                            candidates.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
 
-                    if ag.action_state == (AgentActionState::FollowingWarden { warden_id: i }) {
-                        follower_count += 1;
-                    } else if (ag.x - wx).hypot(ag.y - wy) < 3.8
-                        && matches!(
-                            ag.action_state,
-                            AgentActionState::PanickedFrozen { .. }
-                            | AgentActionState::PanickedWandering { .. }
-                            | AgentActionState::ExitingRoomToCorridor
-                            | AgentActionState::SeekingFamilyInCorridor { .. }
-                        )
-                        {
-                            recruits_to_update.push(idx);
-                        }
-            }
-
-            let newly_recruited = recruits_to_update.len();
-            for r_idx in recruits_to_update {
-                agents[r_idx].action_state = AgentActionState::FollowingWarden { warden_id: i };
-                agents[r_idx].guided_by_warden = true;
-                agents[r_idx].panic_level = (agents[r_idx].panic_level - 2.5).max(1.0);
-                follower_count += 1;
-            }
-            agents[i].rescued_count += newly_recruited;
-
-            match agents[i].action_state {
-                AgentActionState::SweepingFloor { mut waypoint_idx } => {
-                    if follower_count >= 3 {
-                        if let Some(stair) = building
-                            .cells
-                            .iter()
-                            .filter(|c| c.floor == floor && c.kind == CellKind::Stairwell && !c.is_collapsed)
-                            .min_by_key(|c| c.occupant_ids.len())
-                            {
-                                agents[i].action_state = AgentActionState::EscortingToStairs {
-                                    stair_cell_id: stair.id,
+                            for (c_idx, _) in candidates.into_iter().take(needed) {
+                                let slot_num = agents[i].escort_slots.len() as u8;
+                                agents[i].escort_slots.push(c_idx);
+                                agents[c_idx].action_state = AgentActionState::FollowingWarden {
+                                    warden_id: i,
+                                    slot_idx: slot_num,
                                 };
-                                continue;
+                                agents[c_idx].guided_by_warden = true;
+                                agents[c_idx].panic_level = (agents[c_idx].panic_level - 3.0).max(1.0);
+                                agents[i].rescued_count += 1;
                             }
-                    }
+                        }
 
-                    let wps = &building.corridor_waypoints[floor];
-                    if !wps.is_empty() {
-                        let target_wp = wps[waypoint_idx % wps.len()];
-                        if (wx - target_wp.0).hypot(wy - target_wp.1) < 1.8 {
-                            waypoint_idx = (waypoint_idx + 1) % wps.len();
-                            agents[i].action_state =
-                            AgentActionState::SweepingFloor { waypoint_idx };
+                        // En cuanto tiene al menos 1 persona (o llenó sus 2 cupos), va directo a dejarlos a la escalera sin llamar a más gente
+                        if !agents[i].escort_slots.is_empty() {
+                            if let Some(stair) = building
+                                .cells
+                                .iter()
+                                .filter(|c| {
+                                    c.floor == floor
+                                    && c.kind == CellKind::Stairwell
+                                    && !c.is_collapsed
+                                })
+                                .min_by_key(|c| c.occupant_ids.len())
+                                {
+                                    agents[i].action_state = AgentActionState::EscortingToStairs {
+                                        stair_cell_id: stair.id,
+                                    };
+                                    continue;
+                                }
                         }
-                    }
-                }
-                AgentActionState::EscortingToStairs { stair_cell_id } => {
-                    let (sx, sy) = building.cells[stair_cell_id].center();
-                    if (wx - sx).hypot(wy - sy) < 3.2 || curr_cell == stair_cell_id {
-                        let mut guided_ids = Vec::new();
-                        for (idx, ag) in agents.iter().enumerate() {
-                            if ag.action_state == (AgentActionState::FollowingWarden { warden_id: i }) {
-                                guided_ids.push(idx);
+
+                        let wps = &building.corridor_waypoints[floor];
+                        if !wps.is_empty() {
+                            let target_wp = wps[waypoint_idx % wps.len()];
+                            if (wx - target_wp.0).hypot(wy - target_wp.1) < 1.8 {
+                                waypoint_idx = (waypoint_idx + 1) % wps.len();
+                                agents[i].action_state =
+                                AgentActionState::SweepingFloor { waypoint_idx };
                             }
                         }
-                        for gid in guided_ids {
-                            agents[gid].action_state = AgentActionState::Evacuating;
-                            agents[gid].guided_by_warden = true;
-                            agents[gid].family_reunited = true;
-                        }
+                    }
+                    AgentActionState::EscortingToStairs { stair_cell_id } => {
+                        let (sx, sy) = building.cells[stair_cell_id].center();
+                        // Al dejar a las 1 o 2 personas frente a la escalera (< 3.0m), les ordena bajar y regresa por el siguiente grupo
+                        if (wx - sx).hypot(wy - sy) < 3.0
+                            || curr_cell == stair_cell_id
+                            || agents[i].escort_slots.is_empty()
+                            {
+                                let delivered = agents[i].escort_slots.clone();
+                                for gid in delivered {
+                                    agents[gid].action_state = AgentActionState::Evacuating;
+                                    agents[gid].guided_by_warden = true;
+                                    agents[gid].family_reunited = true;
+                                }
+                                agents[i].escort_slots.clear();
+                                agents[i].action_state =
+                                AgentActionState::SweepingFloor { waypoint_idx: 0 };
+                            }
+                    }
+                    _ => {
                         agents[i].action_state = AgentActionState::SweepingFloor { waypoint_idx: 0 };
                     }
                 }
-                _ => {
-                    agents[i].action_state = AgentActionState::SweepingFloor { waypoint_idx: 0 };
-                }
-            }
-            continue;
+                continue;
         }
 
-        // Si el civil va siguiendo a un brigadista, verificar que el brigadista siga en el mismo piso
-        if let AgentActionState::FollowingWarden { warden_id } = agents[i].action_state {
-            if agents[warden_id].floor != floor
+        if let AgentActionState::FollowingWarden { warden_id, .. } = agents[i].action_state {
+            if !config.enable_wardens
+                || agents[warden_id].floor != floor
                 || matches!(
                     agents[warden_id].action_state,
                     AgentActionState::Evacuated | AgentActionState::Incapacitated
@@ -278,17 +302,19 @@ pub fn step_maces_wayfinding(
                 continue;
         }
 
-        // D. TRANSICIÓN DE METAS DE LOS CIVILES (Meta 1: Salir al Pasillo -> Meta 2: Buscar Familia en Pasillo -> Meta 3: Escaleras)
+        // D. TRANSICIÓN DE METAS DE CIVILES (Sin formar círculos familiares)
         match agents[i].action_state {
             AgentActionState::ExitingRoomToCorridor => {
-                // En cuanto pisa el pasillo (Corridor), completó la Meta 1
                 if curr_kind == CellKind::Corridor {
                     if config.enable_social_bonds
                         && !agents[i].social_bonds.is_empty()
                         && !agents[i].family_reunited
                         {
+                            // El grupo familiar elige un waypoint de reunión común según su group_id (evita que se persigan en círculo)
+                            let wp_idx = agents[i].group_id.unwrap_or(i);
                             agents[i].action_state = AgentActionState::SeekingFamilyInCorridor {
-                                patrol_waypoint_idx: i % 5,
+                                patrol_waypoint_idx: wp_idx,
+                                search_timer_s: 5.5,
                             };
                         } else {
                             agents[i].action_state = AgentActionState::Evacuating;
@@ -296,85 +322,32 @@ pub fn step_maces_wayfinding(
                 }
             }
             AgentActionState::SeekingFamilyInCorridor {
-                mut patrol_waypoint_idx,
+                patrol_waypoint_idx,
+                mut search_timer_s,
             } => {
-                if !config.enable_social_bonds {
+                search_timer_s -= dt;
+                if !config.enable_social_bonds || search_timer_s <= 0.0 {
                     agents[i].family_reunited = true;
                     agents[i].action_state = AgentActionState::Evacuating;
                     continue;
                 }
 
-                // Verificar si todos los familiares vivos en este piso ya se encontraron (< 3.2m)
                 let (ax, ay) = (agents[i].x, agents[i].y);
-                let mut all_close = true;
-                for &bid in &agents[i].social_bonds {
-                    let b = &agents[bid];
-                    if b.floor == floor
-                        && !matches!(
-                            b.action_state,
-                            AgentActionState::Evacuated | AgentActionState::Incapacitated
-                        )
-                        {
-                            if (b.x - ax).hypot(b.y - ay) > 3.2 {
-                                all_close = false;
-                                break;
-                            }
-                        }
-                }
+                let lid = agents[i].group_leader_id.unwrap_or(i);
+                let near_leader = agents[lid].floor != floor
+                || (agents[lid].x - ax).hypot(agents[lid].y - ay) < 3.4;
 
-                // Si ya se reunieron todos (o si el humo/fuego en el pasillo es peligroso), pasan juntos a la Meta 3 (Escaleras)
-                if all_close
-                    || building.cells[curr_cell].temperature_c > 110.0
-                    || building.cells[curr_cell].smoke_opacity > 0.35
+                if near_leader
+                    || building.cells[curr_cell].temperature_c > 105.0
+                    || building.cells[curr_cell].smoke_opacity > 0.30
                     {
                         agents[i].family_reunited = true;
                         agents[i].action_state = AgentActionState::Evacuating;
-                        let bonds = agents[i].social_bonds.clone();
-                        for bid in bonds {
-                            if agents[bid].floor == floor {
-                                agents[bid].family_reunited = true;
-                                if matches!(
-                                    agents[bid].action_state,
-                                    AgentActionState::SeekingFamilyInCorridor { .. }
-                                ) {
-                                    agents[bid].action_state = AgentActionState::Evacuating;
-                                }
-                            }
-                        }
                     } else {
-                        // Si aún no ve a su familia, recorre todo el pasillo de waypoint en waypoint buscándolos
-                        let wps = &building.corridor_waypoints[floor];
-                        if !wps.is_empty() {
-                            let wp = wps[patrol_waypoint_idx % wps.len()];
-                            if (ax - wp.0).hypot(ay - wp.1) < 1.8 {
-                                patrol_waypoint_idx = (patrol_waypoint_idx + 1) % wps.len();
-                                agents[i].action_state = AgentActionState::SeekingFamilyInCorridor {
-                                    patrol_waypoint_idx,
-                                };
-                            }
-                        }
-                    }
-            }
-            AgentActionState::Evacuating => {
-                // Si el usuario activa el CheckBox de Vínculos Familiares en vivo y aún están en el pasillo sin reunirse
-                if config.enable_social_bonds
-                    && curr_kind == CellKind::Corridor
-                    && !agents[i].family_reunited
-                    && !agents[i].social_bonds.is_empty()
-                    {
-                        let missing = agents[i].social_bonds.iter().any(|&bid| {
-                            agents[bid].floor == floor
-                            && !matches!(
-                                agents[bid].action_state,
-                                AgentActionState::Evacuated | AgentActionState::Incapacitated
-                            )
-                            && (agents[bid].x - agents[i].x).hypot(agents[bid].y - agents[i].y) > 3.5
-                        });
-                        if missing {
-                            agents[i].action_state = AgentActionState::SeekingFamilyInCorridor {
-                                patrol_waypoint_idx: i % 5,
-                            };
-                        }
+                        agents[i].action_state = AgentActionState::SeekingFamilyInCorridor {
+                            patrol_waypoint_idx,
+                            search_timer_s,
+                        };
                     }
             }
             _ => {}

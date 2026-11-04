@@ -19,8 +19,13 @@ pub struct SimulationConfig {
     pub population_size: usize,
     pub leadership_pct: f32,
     pub trained_pct: f32,
+    // Interruptores modulares de comportamiento para experimentación en la UI
     pub enable_communication: bool,
-    pub enable_social_bonds: bool, // Nuevo CheckBox en la interfaz
+    pub enable_social_bonds: bool,
+    pub enable_wardens: bool,
+    pub enable_warden_line_formation: bool, // Ponerse en fila detrás del brigadista (opuesto a su POV)
+    pub enable_helping_fallen: bool,
+    pub enable_panic_freeze: bool,
     pub initial_panic_pct: f32,
     pub panic_propagation_pct: f32,
     pub impatience_pct: f32,
@@ -36,9 +41,13 @@ impl Default for SimulationConfig {
         Self {
             population_size: 180,
             leadership_pct: 0.35,
-            trained_pct: 0.10,
+            trained_pct: 0.12,
             enable_communication: true,
             enable_social_bonds: true,
+            enable_wardens: true,
+            enable_warden_line_formation: true,
+            enable_helping_fallen: true,
+            enable_panic_freeze: true,
             initial_panic_pct: 0.15,
             panic_propagation_pct: 0.50,
             impatience_pct: 0.40,
