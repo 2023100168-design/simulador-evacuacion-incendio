@@ -13,8 +13,8 @@ use config::{AMBIENT_TEMP_C, FLASHOVER_TEMP_C, SimulationConfig};
 use engine::SimulationEngine;
 use model::agent::MacesRole;
 use render::canvas_2d::{
-    render_simulation_frame, render_telemetry_chart, screen_to_agent, screen_to_cell,
-    screen_to_floor_tile, screen_to_portal,
+    render_agent_pictogram, render_simulation_frame, render_telemetry_chart, screen_to_agent,
+    screen_to_cell, screen_to_floor_tile, screen_to_portal,
 };
 use slint::{Color as SlintColor, Model, ModelRc, SharedString, Timer, TimerMode, VecModel};
 use std::cell::RefCell;
@@ -137,6 +137,7 @@ fn main() {
                     app.set_insp_rescue_ratio((tot_resc as f32 / 10.0).clamp(0.0, 1.0));
                     app.set_insp_rescue_text(format!("{} pers.", tot_resc).into());
                 }
+                app.set_pictogram_frame(render_agent_pictogram(s.agents.get(sel_id), 68, 92));
 
                 let aset_str = s
                 .aset_time_s
@@ -158,6 +159,8 @@ fn main() {
                                                   app.get_show_thermal(),
                                                   s.global_alarm,
                                                   s.config.enable_social_bonds,
+                                                  app.get_view_3d(),
+                                                  app.get_camera_yaw(),
                 );
                 app.set_canvas_frame(img);
 
@@ -392,6 +395,8 @@ fn main() {
             let Some(app) = app_weak.upgrade() else { return };
             let tool = app.get_active_tool();
             let view_mode = app.get_view_mode();
+            let is_3d = app.get_view_3d();
+            let yaw = app.get_camera_yaw();
             let px = mx * (CANVAS_W as f32 / w.max(1.0));
             let py = my * (CANVAS_H as f32 / h.max(1.0));
 
@@ -404,6 +409,8 @@ fn main() {
                     CANVAS_W as f32,
                     CANVAS_H as f32,
                     view_mode,
+                    is_3d,
+                    yaw,
                     px,
                     py,
                 ) {
@@ -423,6 +430,8 @@ fn main() {
                         CANVAS_W as f32,
                         CANVAS_H as f32,
                         view_mode,
+                        is_3d,
+                        yaw,
                         px,
                         py,
                     ) {
@@ -451,6 +460,8 @@ fn main() {
                         CANVAS_W as f32,
                         CANVAS_H as f32,
                         view_mode,
+                        is_3d,
+                        yaw,
                         px,
                         py,
                     ) {
@@ -480,6 +491,8 @@ fn main() {
                         CANVAS_W as f32,
                         CANVAS_H as f32,
                         view_mode,
+                        is_3d,
+                        yaw,
                         px,
                         py,
                     ) {
@@ -503,6 +516,8 @@ fn main() {
                         CANVAS_W as f32,
                         CANVAS_H as f32,
                         view_mode,
+                        is_3d,
+                        yaw,
                         px,
                         py,
                     ) {

@@ -217,6 +217,9 @@ export component AppWindow inherits Window {
     in property <string> insp-speed-text: "1.2 m/s";
     in property <float> insp-rescue-ratio: 0.0;
     in property <string> insp-rescue-text: "0 pers.";
+    in property <image> pictogram-frame;
+    in-out property <bool> view-3d: false;
+    in-out property <float> camera-yaw: 32.0;
 
     in-out property <bool> is-running: false;
     in-out property <int> selected-building-idx: 0;
@@ -466,6 +469,30 @@ export component AppWindow inherits Window {
                         selected => { root.load-preset(self.current-index); }
                     }
 
+                    SwitchRow {
+                        label: "Vista 3D Isométrica (2.5D Extruido)";
+                        checked <=> root.view-3d;
+                        toggled => { root.request-redraw(); }
+                    }
+
+                    if root.view-3d : HorizontalLayout {
+                        spacing: 8px;
+                        Text {
+                            text: "Rotación 3D (" + Math.round(root.camera-yaw) + "°)";
+                            color: #a1a1aa;
+                            font-size: 10.5px;
+                            vertical-alignment: center;
+                        }
+                        Slider {
+                            horizontal-stretch: 1;
+                            height: 16px;
+                            minimum: 0.0;
+                            maximum: 360.0;
+                            value <=> root.camera-yaw;
+                            changed => { root.request-redraw(); }
+                        }
+                    }
+
                     Rectangle { height: 1px; background: #27272a; }
 
                     // SECCIÓN 2: PARÁMETROS DEMOGRÁFICOS Y PÁNICO
@@ -599,32 +626,55 @@ export component AppWindow inherits Window {
                         spacing: 4px;
 
                         HorizontalLayout {
-                            alignment: space-between;
-                            Text {
-                                text: root.insp-title;
-                                color: #f4f4f5;
-                                font-size: 11.5px;
-                                font-weight: 700;
-                                overflow: elide;
+                            spacing: 10px;
+
+                            // Recuadro del Pictograma Estilo Señalética ISO
+                            Rectangle {
+                                width: 68px;
+                                height: 92px;
+                                background: #141419;
+                                border-width: 1px;
+                                border-color: #27272a;
+                                border-radius: 3px;
+                                clip: true;
+
+                                Image {
+                                    width: 100%;
+                                    height: 100%;
+                                    source: root.pictogram-frame;
+                                    image-fit: fill;
+                                }
                             }
-                            Text {
-                                text: root.insp-badge-role;
-                                color: #a1a1aa;
-                                font-size: 10.5px;
+
+                            // Datos y Barras del Agente Seleccionado
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                spacing: 4px;
+
+                                HorizontalLayout {
+                                    alignment: space-between;
+                                    Text {
+                                        text: root.insp-title;
+                                        color: #f4f4f5;
+                                        font-size: 11px;
+                                        font-weight: 700;
+                                        overflow: elide;
+                                    }
+                                }
+
+                                Text {
+                                    text: root.insp-badge-role + "  —  " + root.insp-badge-state;
+                                    color: #14b8a6;
+                                    font-size: 10px;
+                                    overflow: elide;
+                                }
+
+                                DataBar { label: "Salud (1-FED)"; ratio: root.insp-health-ratio; text-val: root.insp-health-text; fill-col: #10b981; }
+                                DataBar { label: "Nivel Pánico"; ratio: root.insp-panic-ratio; text-val: root.insp-panic-text; fill-col: #ef4444; }
+                                DataBar { label: "Velocidad"; ratio: root.insp-speed-ratio; text-val: root.insp-speed-text; fill-col: #3b82f6; }
+                                DataBar { label: "Asistencias"; ratio: root.insp-rescue-ratio; text-val: root.insp-rescue-text; fill-col: #eab308; }
                             }
                         }
-
-                        Text {
-                            text: root.insp-badge-state;
-                            color: #14b8a6;
-                            font-size: 10.5px;
-                            overflow: elide;
-                        }
-
-                        DataBar { label: "Salud (1-FED)"; ratio: root.insp-health-ratio; text-val: root.insp-health-text; fill-col: #10b981; }
-                        DataBar { label: "Nivel Pánico"; ratio: root.insp-panic-ratio; text-val: root.insp-panic-text; fill-col: #ef4444; }
-                        DataBar { label: "Velocidad"; ratio: root.insp-speed-ratio; text-val: root.insp-speed-text; fill-col: #3b82f6; }
-                        DataBar { label: "Asistencias"; ratio: root.insp-rescue-ratio; text-val: root.insp-rescue-text; fill-col: #eab308; }
                     }
 
                     Rectangle { height: 1px; background: #27272a; }
