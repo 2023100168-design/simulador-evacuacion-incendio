@@ -1,120 +1,214 @@
-import { Button, CheckBox, ComboBox, Slider } from "std-widgets.slint";
+import { ComboBox, Slider } from "std-widgets.slint";
 
-component KpiCard inherits Rectangle {
+// Bloque métrico sobrio integrado en la barra superior (separado por líneas de 1px)
+component MetricCell inherits HorizontalLayout {
     in property <string> label;
     in property <string> value;
-    in property <color> accent: #cdd6f4;
+    in property <color> val-color: #f4f4f5;
 
-    background: #181825;
-    border-radius: 6px;
-    border-width: 1px;
-    border-color: #313244;
-    height: 46px;
-    horizontal-stretch: 1;
+    spacing: 0px;
 
     VerticalLayout {
-        padding-left: 8px;
-        padding-right: 8px;
+        padding-left: 14px;
+        padding-right: 14px;
         alignment: center;
-        Text { text: root.label; color: #a6adc8; font-size: 9.5px; font-weight: 600; }
-        Text { text: root.value; color: root.accent; font-size: 13.5px; font-weight: 800; }
+        spacing: 2px;
+
+        Text {
+            text: root.label;
+            color: #71717a;
+            font-size: 9.5px;
+            font-weight: 700;
+        }
+        Text {
+            text: root.value;
+            color: root.val-color;
+            font-size: 13.5px;
+            font-weight: 700;
+        }
+    }
+
+    Rectangle {
+        width: 1px;
+        height: 28px;
+        y: (parent.height - self.height) / 2;
+        background: #27272a;
     }
 }
 
-component MetricBar inherits HorizontalLayout {
-    in property <string> label;
-    in property <string> text-val;
-    in property <float> ratio; // [0.0, 1.0]
-    in property <color> bar-color;
+// Botón técnico sobrio sin bordes redondeados excesivos ni emojis
+component FlatBtn inherits Rectangle {
+    in property <string> text;
+    in property <bool> primary: false;
+    in property <bool> active-danger: false;
+    callback clicked <=> touch.clicked;
 
-    spacing: 6px;
-    height: 16px;
+    height: 28px;
+    border-radius: 3px;
+    border-width: 1px;
+    border-color: root.primary ? (root.active-danger ? #b45309 : #0f766e) : #3f3f46;
+    background: root.primary
+    ? (touch.has-hover ? (root.active-danger ? #b45309 : #0f766e) : (root.active-danger ? #92400e : #115e59))
+    : (touch.has-hover ? #27272a : #18181b);
 
     Text {
-        width: 68px;
+        text: root.text;
+        color: root.primary ? #ffffff : #d4d4d8;
+        font-size: 11px;
+        font-weight: 600;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+
+    touch := TouchArea {}
+}
+
+// Fila de interruptor técnico (CheckBox minimalista de ingeniería)
+component SwitchRow inherits Rectangle {
+    in property <string> label;
+    in-out property <bool> checked;
+    callback toggled();
+
+    height: 24px;
+    background: touch.has-hover ? #1f1f23 : transparent;
+    border-radius: 3px;
+
+    HorizontalLayout {
+        padding-left: 4px;
+        padding-right: 4px;
+        spacing: 8px;
+        alignment: space-between;
+
+        Text {
+            text: root.label;
+            color: root.checked ? #e4e4e7 : #71717a;
+            font-size: 11px;
+            font-weight: 500;
+            vertical-alignment: center;
+        }
+
+        Rectangle {
+            width: 26px;
+            height: 14px;
+            y: (parent.height - self.height) / 2;
+            border-radius: 2px;
+            border-width: 1px;
+            border-color: root.checked ? #14b8a6 : #3f3f46;
+            background: root.checked ? #0f766e : #18181b;
+
+            Rectangle {
+                width: 10px;
+                height: 10px;
+                y: 1px;
+                x: root.checked ? 13px : 1px;
+                border-radius: 1px;
+                background: root.checked ? #ffffff : #71717a;
+            }
+        }
+    }
+
+    touch := TouchArea {
+        clicked => {
+            root.checked = !root.checked;
+            root.toggled();
+        }
+    }
+}
+
+// Barra de progreso lineal sobria
+component DataBar inherits HorizontalLayout {
+    in property <string> label;
+    in property <string> text-val;
+    in property <float> ratio;
+    in property <color> fill-col;
+
+    height: 16px;
+    spacing: 8px;
+
+    Text {
+        width: 78px;
         text: root.label;
-        color: #a6adc8;
-        font-size: 10px;
+        color: #a1a1aa;
+        font-size: 10.5px;
         vertical-alignment: center;
     }
 
     Rectangle {
         horizontal-stretch: 1;
-        height: 8px;
-        background: #313244;
-        border-radius: 4px;
+        height: 5px;
+        y: (parent.height - self.height) / 2;
+        background: #27272a;
+        border-radius: 1px;
         clip: true;
 
         Rectangle {
             x: 0px;
             width: parent.width * Math.clamp(root.ratio, 0.0, 1.0);
             height: 100%;
-            background: root.bar-color;
-            border-radius: 4px;
+            background: root.fill-col;
         }
     }
 
     Text {
-        width: 48px;
+        width: 50px;
         text: root.text-val;
-        color: #cdd6f4;
-        font-size: 10px;
-        font-weight: 700;
+        color: #e4e4e7;
+        font-size: 10.5px;
+        font-weight: 600;
         horizontal-alignment: right;
         vertical-alignment: center;
     }
 }
 
-component LegendDot inherits HorizontalLayout {
-    in property <color> dot-color;
-    in property <color> ring-color: transparent;
+component LegendItem inherits HorizontalLayout {
+    in property <color> swatch;
+    in property <color> border-col: transparent;
     in property <string> label;
 
-    spacing: 5px;
-    alignment: center;
+    spacing: 6px;
 
     Rectangle {
-        width: 12px;
-        height: 12px;
-        border-radius: 6px;
-        background: root.dot-color;
-        border-width: root.ring-color == transparent ? 0px : 2px;
-        border-color: root.ring-color;
+        width: 10px;
+        height: 10px;
+        y: (parent.height - self.height) / 2;
+        border-radius: 2px;
+        background: root.swatch;
+        border-width: root.border-col == transparent ? 0px : 1.5px;
+        border-color: root.border-col;
     }
 
     Text {
         text: root.label;
-        color: #cdd6f4;
+        color: #a1a1aa;
         font-size: 10.5px;
         vertical-alignment: center;
     }
 }
 
 export component AppWindow inherits Window {
-    title: "MACES-HiDAC 2D — Simulador Estocástico Multipiso de Evacuación e Incendios";
-    min-width: 1340px;
-    min-height: 800px;
-    background: #1e1e2e;
+    title: "MACES-HiDAC — Simulador de Evacuación y Propagación Térmica";
+    min-width: 1360px;
+    min-height: 820px;
+    background: #09090b;
 
     in property <image> canvas-frame;
     in property <image> chart-frame;
-    in property <string> status-text: "Rutina Normal activa. Haz clic en el mapa o elige un Preset.";
-    in property <[string]> floor-options: ["Grilla: Todos los Pisos", "Piso 0", "Piso 1", "Piso 2"];
+    in property <string> status-text: "Listo. Seleccione un plano o inicie la simulación.";
+    in property <[string]> building-files: ["pabellon_universitario.txt"];
+    in property <[string]> floor-options: ["Vista: Todos los Pisos", "Piso 0", "Piso 1", "Piso 2"];
 
-    // KPIs Globales
     in property <int> total-agents: 180;
     in property <int> evacuated-agents: 0;
     in property <int> alerted-agents: 0;
     in property <int> fallen-agents: 0;
     in property <int> incapacitated-agents: 0;
     in property <string> sim-time-text: "0.0 s";
-    in property <string> aset-rset-text: "Seg. / --";
+    in property <string> aset-rset-text: "-- / --";
 
-    // Datos Visuales del Inspector de Agentes / Brigadistas
-    in property <string> insp-title: "AGENTE #000 — Brigadista Entrenado";
-    in property <string> insp-badge-role: "Adulto | Familia #1";
+    in property <string> insp-title: "AGENTE #000";
+    in property <string> insp-badge-role: "Adulto | Individual";
     in property <string> insp-badge-state: "Rutina Normal (Piso 0)";
-    in property <color> insp-accent: #94e2d5;
+    in property <color> insp-accent: #14b8a6;
     in property <float> insp-health-ratio: 1.0;
     in property <string> insp-health-text: "100%";
     in property <float> insp-panic-ratio: 0.1;
@@ -122,10 +216,10 @@ export component AppWindow inherits Window {
     in property <float> insp-speed-ratio: 0.5;
     in property <string> insp-speed-text: "1.2 m/s";
     in property <float> insp-rescue-ratio: 0.0;
-    in property <string> insp-rescue-text: "0 resc.";
+    in property <string> insp-rescue-text: "0 pers.";
 
-    // Controles interactivos y Checkboxes de Comportamiento
     in-out property <bool> is-running: false;
+    in-out property <int> selected-building-idx: 0;
     in-out property <int> view-mode: 0;
     in-out property <int> active-tool: 0;
     in-out property <bool> show-graph: false;
@@ -149,353 +243,413 @@ export component AppWindow inherits Window {
     callback update-parameters();
     callback change-population();
     callback reset-building();
+    callback select-building-file(int);
+    callback refresh-building-list();
     callback load-preset(int);
     callback next-warden();
     callback next-agent();
 
-    HorizontalLayout {
-        padding: 10px;
-        spacing: 10px;
+    VerticalLayout {
+        spacing: 0px;
 
-        // COLUMNA IZQUIERDA: KPIs + Lienzo Multipiso en Grilla + Leyenda Visual de Agentes y Aros
-        VerticalLayout {
-            horizontal-stretch: 1;
-            spacing: 8px;
+        // ==================== BARRA SUPERIOR UNIFICADA (ARCHIVO + TELEMETRÍA + EJECUCIÓN) ====================
+        Rectangle {
+            height: 48px;
+            background: #121215;
 
             HorizontalLayout {
-                spacing: 8px;
-                KpiCard { label: "TIEMPO"; value: root.sim-time-text; accent: #89b4fa; }
-                KpiCard { label: "EN ALERTA"; value: root.alerted-agents + " / " + root.total-agents; accent: #f9e2af; }
-                KpiCard { label: "EVACUADOS"; value: root.evacuated-agents + " (" + Math.round(root.evacuated-agents * 100 / Math.max(1, root.total-agents)) + "%)"; accent: #a6e3a1; }
-                KpiCard { label: "CAÍDOS"; value: root.fallen-agents; accent: #fab387; }
-                KpiCard { label: "VÍCTIMAS (FED)"; value: root.incapacitated-agents; accent: #f38ba8; }
-                KpiCard { label: "ASET / RSET"; value: root.aset-rset-text; accent: #cba6f7; }
-            }
+                padding-left: 14px;
+                padding-right: 14px;
+                spacing: 12px;
+                alignment: space-between;
 
-            Rectangle {
-                vertical-stretch: 1;
-                background: #181825;
-                border-radius: 8px;
-                border-width: 1px;
-                border-color: #45475a;
-                clip: true;
-
-                Image {
-                    width: 100%;
-                    height: 100%;
-                    source: root.canvas-frame;
-                    image-fit: fill;
-                }
-
-                TouchArea {
-                    width: 100%;
-                    height: 100%;
-                    clicked => {
-                        root.canvas-clicked(
-                            self.mouse-x / 1px,
-                            self.mouse-y / 1px,
-                            self.width / 1px,
-                            self.height / 1px
-                        );
-                    }
-                }
-            }
-
-            // LEYENDA VISUAL GRÁFICA DE AGENTES, AROS Y ESTADOS
-            Rectangle {
-                height: 54px;
-                background: #181825;
-                border-radius: 6px;
-                border-width: 1px;
-                border-color: #313244;
-
-                VerticalLayout {
-                    padding-left: 12px;
-                    padding-right: 12px;
-                    padding-top: 4px;
-                    padding-bottom: 4px;
-                    spacing: 4px;
-
-                    HorizontalLayout {
-                        spacing: 14px;
-                        alignment: start;
-                        LegendDot { dot-color: #94e2d5; ring-color: #ffffff; label: "Brigadista (Aro Blanco)"; }
-                        LegendDot { dot-color: #89b4fa; label: "Adulto / Joven"; }
-                        LegendDot { dot-color: #f9e2af; label: "Niño"; }
-                        LegendDot { dot-color: #cba6f7; label: "Mayor / Mov. Reducida"; }
-                        LegendDot { dot-color: #89b4fa; ring-color: #f9e2af; label: "Aro Amarillo: Alerta"; }
-                        LegendDot { dot-color: #f38ba8; ring-color: #f38ba8; label: "Aro Rojo: En Shock / Pánico"; }
-                        LegendDot { dot-color: #a6e3a1; ring-color: #a6e3a1; label: "Verde: Ayudando / Extintor"; }
-                    }
+                // Selector de Archivo .TXT de Edificio
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: start;
 
                     Text {
-                        text: root.status-text;
-                        color: #a6e3a1;
-                        font-size: 11.5px;
-                        overflow: elide;
+                        text: "PLANO (.TXT):";
+                        color: #a1a1aa;
+                        font-size: 10.5px;
+                        font-weight: 700;
+                        vertical-alignment: center;
+                    }
+
+                    ComboBox {
+                        width: 210px;
+                        height: 28px;
+                        y: (parent.height - self.height) / 2;
+                        model: root.building-files;
+                        current-index <=> root.selected-building-idx;
+                        selected => { root.select-building-file(self.current-index); }
+                    }
+
+                    FlatBtn {
+                        width: 78px;
+                        y: (parent.height - self.height) / 2;
+                        text: "Escanear";
+                        clicked => { root.refresh-building-list(); }
+                    }
+                }
+
+                // Tira Central de Telemetría Sobria
+                HorizontalLayout {
+                    spacing: 0px;
+                    Rectangle { width: 1px; height: 28px; y: (parent.height - self.height) / 2; background: #27272a; }
+                    MetricCell { label: "TIEMPO"; value: root.sim-time-text; val-color: #f4f4f5; }
+                    MetricCell { label: "EN ALERTA"; value: root.alerted-agents + " / " + root.total-agents; val-color: #eab308; }
+                    MetricCell { label: "EVACUADOS"; value: root.evacuated-agents + " (" + Math.round(root.evacuated-agents * 100 / Math.max(1, root.total-agents)) + "%)"; val-color: #10b981; }
+                    MetricCell { label: "CAÍDOS"; value: root.fallen-agents; val-color: #f97316; }
+                    MetricCell { label: "BAJAS (FED)"; value: root.incapacitated-agents; val-color: #ef4444; }
+                    MetricCell { label: "ASET / RSET"; value: root.aset-rset-text; val-color: #d4d4d8; }
+                }
+
+                // Controles Principales de Simulación
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: end;
+
+                    FlatBtn {
+                        width: 130px;
+                        y: (parent.height - self.height) / 2;
+                        primary: true;
+                        active-danger: root.is-running;
+                        text: root.is-running ? "Pausar Simulación" : "Iniciar (60 FPS)";
+                        clicked => { root.toggle-running(); }
+                    }
+
+                    FlatBtn {
+                        width: 86px;
+                        y: (parent.height - self.height) / 2;
+                        text: "Reiniciar";
+                        clicked => { root.reset-building(); }
                     }
                 }
             }
         }
 
-        // PANEL LATERAL DERECHO: Controles Modulares + Inspector Visual + Curva Telemétrica
-        Rectangle {
-            width: 365px;
-            background: #181825;
-            border-radius: 8px;
-            border-width: 1px;
-            border-color: #313244;
+        // Línea divisoria horizontal de 1px
+        Rectangle { height: 1px; background: #27272a; }
 
+        // ==================== CUERPO PRINCIPAL (LIENZO CAD + PANEL LATERAL DERECHO) ====================
+        HorizontalLayout {
+            vertical-stretch: 1;
+            spacing: 0px;
+
+            // Columna Izquierda: Lienzo 2D + Barra de Leyenda e Información
             VerticalLayout {
-                padding: 10px;
-                spacing: 6px;
-                alignment: start;
-
-                HorizontalLayout {
-                    spacing: 6px;
-                    Button {
-                        text: root.is-running ? "⏸ Pausar" : "▶ Iniciar (60 FPS)";
-                        primary: true;
-                        horizontal-stretch: 1;
-                        clicked => { root.toggle-running(); }
-                    }
-                    Button {
-                        text: "↺ Reiniciar";
-                        horizontal-stretch: 1;
-                        clicked => { root.reset-building(); }
-                    }
-                }
-
-                ComboBox {
-                    model: [
-                        "Preset 1: Completo (Brigada + Familias)",
-                        "Preset 2: Individualista (Sin Ayuda ni Brigada)",
-                        "Preset 3: Brigadistas en Fila + Extintor",
-                        "Preset 4: Pánico Masivo (80%) + Shock"
-                    ];
-                    current-index: 0;
-                    selected => { root.load-preset(self.current-index); }
-                }
-
-                HorizontalLayout {
-                    spacing: 6px;
-                    ComboBox {
-                        horizontal-stretch: 1;
-                        model: root.floor-options;
-                        current-index: 0;
-                        selected => {
-                            root.view-mode = self.current-index;
-                            root.request-redraw();
-                        }
-                    }
-                    ComboBox {
-                        horizontal-stretch: 1;
-                        model: ["Clic: Fuego", "Clic: Puerta", "Clic: Inspector"];
-                        current-index: 0;
-                        selected => { root.active-tool = self.current-index; }
-                    }
-                }
-
-                Text {
-                    text: "Aforo: " + Math.round(root.population-slider) + " pers.  |  Brigada: " + Math.round(root.trained-slider) + "%  |  Pánico: " + Math.round(root.panic-slider) + "%";
-                    color: #cdd6f4;
-                    font-size: 10.5px;
-                    font-weight: 700;
-                }
-
-                HorizontalLayout {
-                    spacing: 5px;
-                    Slider {
-                        minimum: 40.0;
-                        maximum: 400.0;
-                        value <=> root.population-slider;
-                        released => { root.change-population(); }
-                    }
-                    Slider {
-                        minimum: 0.0;
-                        maximum: 50.0;
-                        value <=> root.trained-slider;
-                        changed => { root.update-parameters(); }
-                    }
-                    Slider {
-                        minimum: 0.0;
-                        maximum: 100.0;
-                        value <=> root.panic-slider;
-                        changed => { root.update-parameters(); }
-                    }
-                }
-
-                // INTERRUPTORES OPCIONALES DE COMPORTAMIENTO (Grid 2 columnas)
-                Rectangle {
-                    background: #11111b;
-                    border-radius: 6px;
-                    border-width: 1px;
-                    border-color: #313244;
-
-                    VerticalLayout {
-                        padding: 6px;
-                        spacing: 2px;
-
-                        HorizontalLayout {
-                            CheckBox {
-                                horizontal-stretch: 1;
-                                text: "Brigadistas Activos";
-                                checked <=> root.enable-wardens;
-                                toggled => { root.update-parameters(); }
-                            }
-                            CheckBox {
-                                horizontal-stretch: 1;
-                                text: "Fila tras Brigadista";
-                                checked <=> root.enable-warden-line;
-                                toggled => { root.update-parameters(); }
-                            }
-                        }
-
-                        HorizontalLayout {
-                            CheckBox {
-                                horizontal-stretch: 1;
-                                text: "Lazos Familiares";
-                                checked <=> root.enable-social;
-                                toggled => { root.update-parameters(); }
-                            }
-                            CheckBox {
-                                horizontal-stretch: 1;
-                                text: "Ayudar a Caídos";
-                                checked <=> root.enable-helping;
-                                toggled => { root.update-parameters(); }
-                            }
-                        }
-
-                        HorizontalLayout {
-                            CheckBox {
-                                horizontal-stretch: 1;
-                                text: "Shock por Pánico";
-                                checked <=> root.enable-panic-freeze;
-                                toggled => { root.update-parameters(); }
-                            }
-                            CheckBox {
-                                horizontal-stretch: 1;
-                                text: "Alarma Global";
-                                checked <=> root.global-alarm;
-                                toggled => {
-                                    root.update-parameters();
-                                    root.request-redraw();
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // TARJETA GRÁFICA DEL INSPECTOR DE AGENTES Y BRIGADISTAS
-                HorizontalLayout {
-                    spacing: 4px;
-                    alignment: space-between;
-                    Text {
-                        text: "INSPECTOR VISUAL EN VIVO";
-                        color: #f9e2af;
-                        font-size: 11px;
-                        font-weight: 800;
-                        vertical-alignment: center;
-                    }
-                    Button {
-                        text: "👮 Sig. Brigada";
-                        clicked => { root.next-warden(); }
-                    }
-                    Button {
-                        text: "👤 Sig. Agente";
-                        clicked => { root.next-agent(); }
-                    }
-                }
-
-                Rectangle {
-                    background: #11111b;
-                    border-radius: 6px;
-                    border-width: 1px;
-                    border-color: root.insp-accent;
-
-                    VerticalLayout {
-                        padding: 8px;
-                        spacing: 5px;
-
-                        HorizontalLayout {
-                            alignment: space-between;
-                            Text {
-                                text: root.insp-title;
-                                color: root.insp-accent;
-                                font-size: 11.5px;
-                                font-weight: 800;
-                            }
-                            Text {
-                                text: root.insp-badge-role;
-                                color: #cdd6f4;
-                                font-size: 10px;
-                            }
-                        }
-
-                        Rectangle {
-                            height: 20px;
-                            background: #1e1e2e;
-                            border-radius: 4px;
-                            HorizontalLayout {
-                                padding-left: 8px;
-                                padding-right: 8px;
-                                Text {
-                                    text: root.insp-badge-state;
-                                    color: #a6e3a1;
-                                    font-size: 10.5px;
-                                    font-weight: 700;
-                                    vertical-alignment: center;
-                                }
-                            }
-                        }
-
-                        MetricBar {
-                            label: "Salud (FED)";
-                            ratio: root.insp-health-ratio;
-                            text-val: root.insp-health-text;
-                            bar-color: #a6e3a1;
-                        }
-                        MetricBar {
-                            label: "Nivel Pánico";
-                            ratio: root.insp-panic-ratio;
-                            text-val: root.insp-panic-text;
-                            bar-color: #f38ba8;
-                        }
-                        MetricBar {
-                            label: "Vel. Media";
-                            ratio: root.insp-speed-ratio;
-                            text-val: root.insp-speed-text;
-                            bar-color: #89b4fa;
-                        }
-                        MetricBar {
-                            label: "Rescates";
-                            ratio: root.insp-rescue-ratio;
-                            text-val: root.insp-rescue-text;
-                            bar-color: #f9e2af;
-                        }
-                    }
-                }
-
-                HorizontalLayout {
-                    alignment: space-between;
-                    Text { text: "TELEMETRÍA (0-100%)"; color: #cdd6f4; font-size: 10.5px; font-weight: 700; }
-                    Text { text: "Verde: Evac | Azul: Alerta | Rojo: FED"; color: #a6adc8; font-size: 9.5px; }
-                }
+                horizontal-stretch: 1;
+                spacing: 0px;
 
                 Rectangle {
                     vertical-stretch: 1;
-                    min-height: 110px;
-                    background: #11111b;
-                    border-radius: 6px;
-                    border-width: 1px;
-                    border-color: #45475a;
+                    background: #09090b;
                     clip: true;
 
                     Image {
                         width: 100%;
                         height: 100%;
-                        source: root.chart-frame;
+                        source: root.canvas-frame;
                         image-fit: fill;
+                    }
+
+                    TouchArea {
+                        width: 100%;
+                        height: 100%;
+                        clicked => {
+                            root.canvas-clicked(
+                                self.mouse-x / 1px,
+                                self.mouse-y / 1px,
+                                self.width / 1px,
+                                self.height / 1px
+                            );
+                        }
+                    }
+                }
+
+                Rectangle { height: 1px; background: #27272a; }
+
+                // Pie de Página Técnico: Leyenda + Estado
+                Rectangle {
+                    height: 46px;
+                    background: #121215;
+
+                    VerticalLayout {
+                        padding-left: 16px;
+                        padding-right: 16px;
+                        padding-top: 5px;
+                        padding-bottom: 5px;
+                        spacing: 3px;
+
+                        HorizontalLayout {
+                            spacing: 18px;
+                            alignment: start;
+                            LegendItem { swatch: #14b8a6; border-col: #ffffff; label: "Brigadista"; }
+                            LegendItem { swatch: #3b82f6; label: "Adulto / Joven"; }
+                            LegendItem { swatch: #f59e0b; label: "Niño"; }
+                            LegendItem { swatch: #a855f7; label: "Mayor / Mov. Reducida"; }
+                            LegendItem { swatch: #ef4444; label: "Pánico / Shock"; }
+                            LegendItem { swatch: #fb923c; label: "Caído en Piso"; }
+                            LegendItem { swatch: #52525b; border-col: #ef4444; label: "Incapacitado (FED)"; }
+                        }
+
+                        HorizontalLayout {
+                            alignment: space-between;
+                            Text {
+                                text: root.status-text;
+                                color: #10b981;
+                                font-size: 11px;
+                                overflow: elide;
+                            }
+                            Text {
+                                text: "Onda Roja/Naranja: Frente Térmico (1m²)   |   Trazo Violeta: Lazos Familiares   |   Trazo Celeste: Escolta";
+                                color: #71717a;
+                                font-size: 10px;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Línea divisoria vertical de 1px entre el lienzo y el panel derecho
+            Rectangle { width: 1px; background: #27272a; }
+
+            // Panel Lateral Derecho: Secciones separadas por líneas delgadas de 1px
+            Rectangle {
+                width: 350px;
+                background: #121215;
+
+                VerticalLayout {
+                    padding: 14px;
+                    spacing: 10px;
+                    alignment: start;
+
+                    // SECCIÓN 1: VISTA Y HERRAMIENTA DE INTERACCIÓN
+                    Text {
+                        text: "VISTA Y HERRAMIENTA DE INTERACCIÓN";
+                        color: #71717a;
+                        font-size: 9.5px;
+                        font-weight: 700;
+                    }
+
+                    HorizontalLayout {
+                        spacing: 8px;
+                        ComboBox {
+                            horizontal-stretch: 1;
+                            height: 28px;
+                            model: root.floor-options;
+                            current-index: 0;
+                            selected => {
+                                root.view-mode = self.current-index;
+                                root.request-redraw();
+                            }
+                        }
+                        ComboBox {
+                            horizontal-stretch: 1;
+                            height: 28px;
+                            model: ["Clic: Fuego (Onda)", "Clic: Puerta", "Clic: Inspector"];
+                            current-index: 0;
+                            selected => { root.active-tool = self.current-index; }
+                        }
+                    }
+
+                    ComboBox {
+                        height: 28px;
+                        model: [
+                            "Preset 1: Brigada + Familias (Completo)",
+                            "Preset 2: Individualista (Sin Lazos ni Brigada)",
+                            "Preset 3: Brigadistas en Fila + Extintor",
+                            "Preset 4: Pánico Masivo (80%) + Shock"
+                        ];
+                        current-index: 0;
+                        selected => { root.load-preset(self.current-index); }
+                    }
+
+                    Rectangle { height: 1px; background: #27272a; }
+
+                    // SECCIÓN 2: PARÁMETROS DEMOGRÁFICOS Y PÁNICO
+                    Text {
+                        text: "PARÁMETROS DE POBLACIÓN";
+                        color: #71717a;
+                        font-size: 9.5px;
+                        font-weight: 700;
+                    }
+
+                    VerticalLayout {
+                        spacing: 4px;
+
+                        HorizontalLayout {
+                            alignment: space-between;
+                            Text { text: "Aforo del Edificio"; color: #d4d4d8; font-size: 11px; }
+                            Text { text: Math.round(root.population-slider) + " ocupantes"; color: #f4f4f5; font-size: 11px; font-weight: 600; }
+                        }
+                        Slider {
+                            height: 16px;
+                            minimum: 40.0;
+                            maximum: 400.0;
+                            value <=> root.population-slider;
+                            released => { root.change-population(); }
+                        }
+
+                        HorizontalLayout {
+                            alignment: space-between;
+                            Text { text: "Proporción de Brigadistas"; color: #d4d4d8; font-size: 11px; }
+                            Text { text: Math.round(root.trained-slider) + " %"; color: #f4f4f5; font-size: 11px; font-weight: 600; }
+                        }
+                        Slider {
+                            height: 16px;
+                            minimum: 0.0;
+                            maximum: 50.0;
+                            value <=> root.trained-slider;
+                            changed => { root.update-parameters(); }
+                        }
+
+                        HorizontalLayout {
+                            alignment: space-between;
+                            Text { text: "Susceptibilidad al Pánico"; color: #d4d4d8; font-size: 11px; }
+                            Text { text: Math.round(root.panic-slider) + " %"; color: #f4f4f5; font-size: 11px; font-weight: 600; }
+                        }
+                        Slider {
+                            height: 16px;
+                            minimum: 0.0;
+                            maximum: 100.0;
+                            value <=> root.panic-slider;
+                            changed => { root.update-parameters(); }
+                        }
+                    }
+
+                    Rectangle { height: 1px; background: #27272a; }
+
+                    // SECCIÓN 3: REGLAS DE COMPORTAMIENTO (OPCIONALES)
+                    Text {
+                        text: "REGLAS CONDUCTUALES ACTIVAS";
+                        color: #71717a;
+                        font-size: 9.5px;
+                        font-weight: 700;
+                    }
+
+                    VerticalLayout {
+                        spacing: 2px;
+                        SwitchRow {
+                            label: "Brigadistas y Patrullaje de Piso";
+                            checked <=> root.enable-wardens;
+                            toggled => { root.update-parameters(); }
+                        }
+                        SwitchRow {
+                            label: "Formación en Fila Detrás del Brigadista";
+                            checked <=> root.enable-warden-line;
+                            toggled => { root.update-parameters(); }
+                        }
+                        SwitchRow {
+                            label: "Vínculos Familiares y Búsqueda en Pasillo";
+                            checked <=> root.enable-social;
+                            toggled => { root.update-parameters(); }
+                        }
+                        SwitchRow {
+                            label: "Asistencia Altruista a Personas Caídas";
+                            checked <=> root.enable-helping;
+                            toggled => { root.update-parameters(); }
+                        }
+                        SwitchRow {
+                            label: "Bloqueo y Desorientación por Pánico";
+                            checked <=> root.enable-panic-freeze;
+                            toggled => { root.update-parameters(); }
+                        }
+                        SwitchRow {
+                            label: "Alarma General Activa en Edificio";
+                            checked <=> root.global-alarm;
+                            toggled => {
+                                root.update-parameters();
+                                root.request-redraw();
+                            }
+                        }
+                    }
+
+                    Rectangle { height: 1px; background: #27272a; }
+
+                    // SECCIÓN 4: INSPECTOR DE UNIDAD SELECCIONADA
+                    HorizontalLayout {
+                        alignment: space-between;
+                        Text {
+                            text: "INSPECTOR DE AGENTE";
+                            color: #71717a;
+                            font-size: 9.5px;
+                            font-weight: 700;
+                            vertical-alignment: center;
+                        }
+                        HorizontalLayout {
+                            spacing: 6px;
+                            FlatBtn {
+                                width: 88px;
+                                height: 22px;
+                                text: "Sig. Brigada";
+                                clicked => { root.next-warden(); }
+                            }
+                            FlatBtn {
+                                width: 82px;
+                                height: 22px;
+                                text: "Sig. Agente";
+                                clicked => { root.next-agent(); }
+                            }
+                        }
+                    }
+
+                    VerticalLayout {
+                        spacing: 4px;
+
+                        HorizontalLayout {
+                            alignment: space-between;
+                            Text {
+                                text: root.insp-title;
+                                color: #f4f4f5;
+                                font-size: 11.5px;
+                                font-weight: 700;
+                                overflow: elide;
+                            }
+                            Text {
+                                text: root.insp-badge-role;
+                                color: #a1a1aa;
+                                font-size: 10.5px;
+                            }
+                        }
+
+                        Text {
+                            text: root.insp-badge-state;
+                            color: #14b8a6;
+                            font-size: 10.5px;
+                            overflow: elide;
+                        }
+
+                        DataBar { label: "Salud (1-FED)"; ratio: root.insp-health-ratio; text-val: root.insp-health-text; fill-col: #10b981; }
+                        DataBar { label: "Nivel Pánico"; ratio: root.insp-panic-ratio; text-val: root.insp-panic-text; fill-col: #ef4444; }
+                        DataBar { label: "Velocidad"; ratio: root.insp-speed-ratio; text-val: root.insp-speed-text; fill-col: #3b82f6; }
+                        DataBar { label: "Asistencias"; ratio: root.insp-rescue-ratio; text-val: root.insp-rescue-text; fill-col: #eab308; }
+                    }
+
+                    Rectangle { height: 1px; background: #27272a; }
+
+                    // SECCIÓN 5: CURVA HISTÓRICA DE EVACUACIÓN
+                    HorizontalLayout {
+                        alignment: space-between;
+                        Text { text: "PROGRESO TEMPORAL (0 - 100%)"; color: #71717a; font-size: 9.5px; font-weight: 700; }
+                        Text { text: "Verde: Evac | Azul: Alerta | Rojo: FED"; color: #71717a; font-size: 9.5px; }
+                    }
+
+                    Rectangle {
+                        vertical-stretch: 1;
+                        min-height: 95px;
+                        background: #09090b;
+                        border-width: 1px;
+                        border-color: #27272a;
+                        clip: true;
+
+                        Image {
+                            width: 100%;
+                            height: 100%;
+                            source: root.chart-frame;
+                            image-fit: fill;
+                        }
                     }
                 }
             }

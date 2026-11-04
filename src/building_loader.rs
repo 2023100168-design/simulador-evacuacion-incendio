@@ -41,13 +41,17 @@ pub struct LoadedBuilding {
     pub cell_grid: Vec<Vec<Vec<Option<usize>>>>,
     pub portal_at_tile: Vec<Vec<Vec<Option<usize>>>>,
     pub walkable_grid: Vec<Vec<Vec<bool>>>,
-    /// Meta 1: Laberinto desde habitaciones hacia el pasillo más cercano
+    // Matrices termodinámicas por baldosa (1m x 1m) para propagación en ondas reales
+    pub tile_temp: Vec<Vec<Vec<f32>>>,
+    pub tile_smoke: Vec<Vec<Vec<f32>>>,
+    pub tile_co: Vec<Vec<Vec<f32>>>,
+    pub tile_co2: Vec<Vec<Vec<f32>>>,
+    pub tile_fuel: Vec<Vec<Vec<f32>>>,
+    pub tile_fire_time: Vec<Vec<Vec<f32>>>,
+    // Campos de navegación del laberinto
     pub corridor_flow: Vec<Vec<Vec<f32>>>,
-    /// Meta 3 (Civiles no entrenados): Laberinto hacia escaleras/salidas con sesgo de costumbre (genera cuellos de botella)
     pub naive_flow: Vec<Vec<Vec<f32>>>,
-    /// Meta 3 (Brigadistas y guiados): Laberinto óptimo que balancea puertas, escaleras y esquiva humo
     pub optimal_flow: Vec<Vec<Vec<f32>>>,
-    /// Puntos clave del pasillo en cada piso para que las familias y brigadistas lo recorran de punta a punta
     pub corridor_waypoints: Vec<Vec<(f32, f32)>>,
 }
 
@@ -62,6 +66,56 @@ impl LoadedBuilding {
             self.cell_grid[floor][r][c]
         } else {
             None
+        }
+    }
+
+    pub fn tile_coords_at(&self, x: f32, y: f32) -> (usize, usize) {
+        let c = ((x / TILE_SIZE_M).floor() as isize).clamp(0, self.cols as isize - 1) as usize;
+        let r = ((y / TILE_SIZE_M).floor() as isize).clamp(0, self.rows as isize - 1) as usize;
+        (r, c)
+    }
+
+    /// Inyecta o apaga fuego exactamente en la baldosa clicada (y su vecindad inmediata de 1m)
+    pub fn ignite_at_tile(&mut self, floor: usize, r: usize, c: usize, target_temp: f32) {
+        if floor >= self.floors.len() || r >= self.rows || c >= self.cols {
+            return;
+        }
+        if !self.walkable_grid[floor][r][c] {
+            return;
+        }
+
+        if target_temp <= AMBIENT_TEMP_C + 1.0 {
+            // Apagar un radio de 2 baldosas alrededor del clic
+            for dr in -2..=2isize {
+                for dc in -2..=2isize {
+                    let nr = r as isize + dr;
+                    let nc = c as isize + dc;
+                    if nr >= 0 && nr < self.rows as isize && nc >= 0 && nc < self.cols as isize {
+                        let (ur, uc) = (nr as usize, nc as usize);
+                        self.tile_temp[floor][ur][uc] = AMBIENT_TEMP_C;
+                        self.tile_smoke[floor][ur][uc] = 0.0;
+                        self.tile_co[floor][ur][uc] = 0.0;
+                        self.tile_fire_time[floor][ur][uc] = 0.0;
+                    }
+                }
+            }
+        } else {
+            // Encender epicentro puntual en la baldosa (r, c) para que crezca en ondas
+            self.tile_temp[floor][r][c] = target_temp;
+            self.tile_smoke[floor][r][c] = if target_temp >= FLASHOVER_TEMP_C { 0.85 } else { 0.35 };
+            self.tile_fire_time[floor][r][c] = if target_temp >= FLASHOVER_TEMP_C { 15.0 } else { 2.0 };
+
+            // Precalentar suavemente las 4 baldosas ortogonales para iniciar el frente de onda circular
+            for (dr, dc) in [(-1isize, 0isize), (1, 0), (0, -1), (0, 1)] {
+                let nr = r as isize + dr;
+                let nc = c as isize + dc;
+                if self.is_tile_passable(floor, nr, nc) {
+                    let (ur, uc) = (nr as usize, nc as usize);
+                    self.tile_temp[floor][ur][uc] =
+                    self.tile_temp[floor][ur][uc].max(AMBIENT_TEMP_C + (target_temp - AMBIENT_TEMP_C) * 0.35);
+                    self.tile_smoke[floor][ur][uc] = self.tile_smoke[floor][ur][uc].max(0.15);
+                }
+            }
         }
     }
 
@@ -106,7 +160,7 @@ impl LoadedBuilding {
         ];
 
         for f in 0..num_floors {
-            // 1. Calcular corridor_flow (Meta 1: Salir de cualquier oficina hacia el Pasillo)
+            // 1. Meta 1: Salir de las oficinas hacia el pasillo (evitando baldosas en llamas)
             let mut c_dist = vec![vec![f32::INFINITY; self.cols]; self.rows];
             let mut c_heap = BinaryHeap::new();
             for r in 0..self.rows {
@@ -115,10 +169,12 @@ impl LoadedBuilding {
                         continue;
                     }
                     if let Some(cid) = self.cell_grid[f][r][c] {
-                        if self.cells[cid].kind == CellKind::Corridor {
-                            c_dist[r][c] = 0.0;
-                            c_heap.push(MazeNode { cost: 0.0, r, c });
-                        }
+                        if self.cells[cid].kind == CellKind::Corridor
+                            && self.tile_temp[f][r][c] < 120.0
+                            {
+                                c_dist[r][c] = 0.0;
+                                c_heap.push(MazeNode { cost: 0.0, r, c });
+                            }
                     }
                 }
             }
@@ -140,16 +196,25 @@ impl LoadedBuilding {
                             continue;
                         }
                         let (ur, uc) = (nr as usize, nc as usize);
-                    let next_c = cost + w;
+                    let heat_pen = if self.tile_temp[f][ur][uc] > 80.0 {
+                        (self.tile_temp[f][ur][uc] - AMBIENT_TEMP_C) * 0.4
+                    } else {
+                        0.0
+                    };
+                    let next_c = cost + w + heat_pen;
                     if next_c < c_dist[ur][uc] {
                         c_dist[ur][uc] = next_c;
-                        c_heap.push(MazeNode { cost: next_c, r: ur, c: uc });
+                        c_heap.push(MazeNode {
+                            cost: next_c,
+                            r: ur,
+                            c: uc,
+                        });
                     }
                 }
             }
             self.corridor_flow[f] = c_dist;
 
-            // 2. Calcular optimal_flow (Brigadistas) y naive_flow (Civiles sin guía)
+            // 2. Meta 3: optimal_flow y naive_flow evaluando el calor baldosa por baldosa
             let mut opt_dist = vec![vec![f32::INFINITY; self.cols]; self.rows];
             let mut naive_dist = vec![vec![f32::INFINITY; self.cols]; self.rows];
             let mut opt_heap = BinaryHeap::new();
@@ -171,12 +236,19 @@ impl LoadedBuilding {
                         if is_goal {
                             let crowd_pen = (self.cells[cid].occupant_ids.len() as f32) * 0.45;
                             opt_dist[r][c] = crowd_pen;
-                            opt_heap.push(MazeNode { cost: crowd_pen, r, c });
+                            opt_heap.push(MazeNode {
+                                cost: crowd_pen,
+                                r,
+                                c,
+                            });
 
-                            // Los civiles sin guía tienen sesgo hacia la escalera/salida principal (izquierda), creando aglomeración realista
-                            let habit_bias = if c < self.cols / 2 { 0.0 } else { 5.5 };
+                            let habit_bias = if c < self.cols / 2 { 0.0 } else { 5.0 };
                             naive_dist[r][c] = habit_bias;
-                            naive_heap.push(MazeNode { cost: habit_bias, r, c });
+                            naive_heap.push(MazeNode {
+                                cost: habit_bias,
+                                r,
+                                c,
+                            });
                         }
                     }
                 }
@@ -200,23 +272,31 @@ impl LoadedBuilding {
                         }
                         let (ur, uc) = (nr as usize, nc as usize);
                     let mut pen = 0.0_f32;
+                    let t_tile = self.tile_temp[f][ur][uc];
+                    let s_tile = self.tile_smoke[f][ur][uc];
+                    if t_tile > AMBIENT_TEMP_C + 8.0 {
+                        pen += (t_tile - AMBIENT_TEMP_C) * 0.45;
+                    }
+                    if t_tile >= 280.0 {
+                        pen += 900.0;
+                    }
+                    pen += s_tile * 14.0;
+
                     if let Some(cid) = self.cell_grid[f][ur][uc] {
                         let cell = &self.cells[cid];
                         if f == 0 && cell.kind == CellKind::Stairwell {
                             pen += 8.0;
                         }
-                        if cell.temperature_c > AMBIENT_TEMP_C + 10.0 {
-                            pen += (cell.temperature_c - AMBIENT_TEMP_C) * 0.35;
-                        }
-                        if cell.temperature_c >= FLASHOVER_TEMP_C * 0.60 {
-                            pen += 800.0;
-                        }
-                        pen += cell.smoke_opacity * 12.0 + cell.density() * 0.85;
+                        pen += cell.density() * 0.80;
                     }
                     let next_cost = cost + step_w + pen;
                     if next_cost < opt_dist[ur][uc] {
                         opt_dist[ur][uc] = next_cost;
-                        opt_heap.push(MazeNode { cost: next_cost, r: ur, c: uc });
+                        opt_heap.push(MazeNode {
+                            cost: next_cost,
+                            r: ur,
+                            c: uc,
+                        });
                     }
                 }
             }
@@ -239,20 +319,23 @@ impl LoadedBuilding {
                         }
                         let (ur, uc) = (nr as usize, nc as usize);
                     let mut pen = 0.0_f32;
+                    // El civil ve las llamas directas en una baldosa (> 220°C) y las rodea, pero no prevé humo ni congestión lejana
+                    if self.tile_temp[f][ur][uc] >= 220.0 {
+                        pen += 450.0;
+                    }
                     if let Some(cid) = self.cell_grid[f][ur][uc] {
-                        let cell = &self.cells[cid];
-                        if f == 0 && cell.kind == CellKind::Stairwell {
+                        if f == 0 && self.cells[cid].kind == CellKind::Stairwell {
                             pen += 8.0;
-                        }
-                        // El civil sin guía solo evita llamas directas evidentes, pero no anticipa cuellos de botella ni humo moderado
-                        if cell.temperature_c >= FLASHOVER_TEMP_C * 0.80 {
-                            pen += 300.0;
                         }
                     }
                     let next_cost = cost + step_w + pen;
                     if next_cost < naive_dist[ur][uc] {
                         naive_dist[ur][uc] = next_cost;
-                        naive_heap.push(MazeNode { cost: next_cost, r: ur, c: uc });
+                        naive_heap.push(MazeNode {
+                            cost: next_cost,
+                            r: ur,
+                            c: uc,
+                        });
                     }
                 }
             }
@@ -272,9 +355,7 @@ impl LoadedBuilding {
         if floor >= flow_map.len() {
             return (0.0, 0.0);
         }
-        let c = ((x / TILE_SIZE_M).floor() as isize).clamp(0, self.cols as isize - 1) as usize;
-        let r = ((y / TILE_SIZE_M).floor() as isize).clamp(0, self.rows as isize - 1) as usize;
-
+        let (r, c) = self.tile_coords_at(x, y);
         let flow = &flow_map[floor];
         let mut best_target = ((c as f32 + 0.5) * TILE_SIZE_M, (r as f32 + 0.5) * TILE_SIZE_M);
         let mut best_val = flow[r][c];
@@ -318,7 +399,7 @@ impl LoadedBuilding {
             (0.0, 0.0)
         }
     }
-    /// Calcula el siguiente paso en el laberinto para ir hacia una coordenada específica (ej. alarma, extintor o cuarto a barrer)
+
     pub fn direction_towards_point(
         &self,
         floor: usize,
@@ -327,10 +408,8 @@ impl LoadedBuilding {
         tx: f32,
         ty: f32,
     ) -> (f32, f32) {
-        let start_c = ((x / TILE_SIZE_M).floor() as isize).clamp(0, self.cols as isize - 1) as usize;
-        let start_r = ((y / TILE_SIZE_M).floor() as isize).clamp(0, self.rows as isize - 1) as usize;
-        let goal_c = ((tx / TILE_SIZE_M).floor() as isize).clamp(0, self.cols as isize - 1) as usize;
-        let goal_r = ((ty / TILE_SIZE_M).floor() as isize).clamp(0, self.rows as isize - 1) as usize;
+        let (start_r, start_c) = self.tile_coords_at(x, y);
+        let (goal_r, goal_c) = self.tile_coords_at(tx, ty);
 
         if (start_r as isize - goal_r as isize).abs() <= 1
             && (start_c as isize - goal_c as isize).abs() <= 1
@@ -341,7 +420,6 @@ impl LoadedBuilding {
                 return (dx / l, dy / l);
             }
 
-            // BFS rápido en grilla desde goal hasta start
             let mut dist = vec![vec![u16::MAX; self.cols]; self.rows];
         let mut q = VecDeque::new();
         dist[goal_r][goal_c] = 0;
@@ -404,8 +482,13 @@ impl LoadedBuilding {
         (dx / l, dy / l)
     }
 
-    /// Resolución geométrica de colisiones Círculo-Baldosa con deslizamiento suave (cero rebote y cero vibración)
-    pub fn resolve_maze_wall_collisions(&self, floor: usize, x: &mut f32, y: &mut f32, radius: f32) {
+    pub fn resolve_maze_wall_collisions(
+        &self,
+        floor: usize,
+        x: &mut f32,
+        y: &mut f32,
+        radius: f32,
+    ) {
         let cr = (*y / TILE_SIZE_M).floor() as isize;
         let cc = (*x / TILE_SIZE_M).floor() as isize;
 
@@ -432,7 +515,6 @@ impl LoadedBuilding {
                             *x += (dx / dist) * overlap;
                             *y += (dy / dist) * overlap;
                         } else {
-                            // Empujar hacia el centro de la baldosa actual si cayó exactamente en el borde
                             let tile_cx = (cc as f32 + 0.5) * TILE_SIZE_M;
                             let tile_cy = (cr as f32 + 0.5) * TILE_SIZE_M;
                             *x = (*x + (tile_cx - *x) * 0.3).clamp(0.2, self.grid_width_m - 0.2);
@@ -500,7 +582,6 @@ pub fn load_building_from_ascii(path: &str) -> Result<LoadedBuilding, String> {
         }
     }
 
-    // PASO 1: Inundación de Celdas para el Grafo de Fuego y Humo
     for f in 0..num_floors {
         for r in 0..rows {
             for c in 0..cols {
@@ -688,7 +769,6 @@ pub fn load_building_from_ascii(path: &str) -> Result<LoadedBuilding, String> {
         }
     }
 
-    // PASO 2: Detección de Puertas ('D' y 'F') únicamente donde hay símbolo explícito (sin franjas verdes fantasma)
     let mut portals: Vec<Portal> = Vec::new();
     for f in 0..num_floors {
         for r in 0..rows {
@@ -769,7 +849,6 @@ pub fn load_building_from_ascii(path: &str) -> Result<LoadedBuilding, String> {
         }
     }
 
-    // PASO 3: Enlazar Escaleras ('S') y Ascensores ('V') entre pisos consecutivos
     for f in 0..(num_floors.saturating_sub(1)) {
         let mut linked_pairs = Vec::new();
         for r in 0..rows {
@@ -823,7 +902,13 @@ pub fn load_building_from_ascii(path: &str) -> Result<LoadedBuilding, String> {
     let naive_flow = vec![vec![vec![f32::INFINITY; cols]; rows]; num_floors];
     let optimal_flow = vec![vec![vec![f32::INFINITY; cols]; rows]; num_floors];
 
-    // Extraer waypoints distribuidos a lo largo del pasillo de cada piso para búsqueda familiar y patrullaje de brigadistas
+    let tile_temp = vec![vec![vec![AMBIENT_TEMP_C; cols]; rows]; num_floors];
+    let tile_smoke = vec![vec![vec![0.0_f32; cols]; rows]; num_floors];
+    let tile_co = vec![vec![vec![0.0_f32; cols]; rows]; num_floors];
+    let tile_co2 = vec![vec![vec![0.04_f32; cols]; rows]; num_floors];
+    let tile_fuel = vec![vec![vec![1.0_f32; cols]; rows]; num_floors];
+    let tile_fire_time = vec![vec![vec![0.0_f32; cols]; rows]; num_floors];
+
     let mut corridor_waypoints = vec![Vec::new(); num_floors];
     for cell in &cells {
         if cell.kind == CellKind::Corridor {
@@ -853,6 +938,12 @@ pub fn load_building_from_ascii(path: &str) -> Result<LoadedBuilding, String> {
         cell_grid,
         portal_at_tile,
         walkable_grid,
+        tile_temp,
+        tile_smoke,
+        tile_co,
+        tile_co2,
+        tile_fuel,
+        tile_fire_time,
         corridor_flow,
         naive_flow,
         optimal_flow,

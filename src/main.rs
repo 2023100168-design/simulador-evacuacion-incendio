@@ -14,19 +14,39 @@ use engine::SimulationEngine;
 use model::agent::MacesRole;
 use render::canvas_2d::{
     render_simulation_frame, render_telemetry_chart, screen_to_agent, screen_to_cell,
-    screen_to_portal,
+    screen_to_floor_tile, screen_to_portal,
 };
-use slint::{Color as SlintColor, ModelRc, SharedString, Timer, TimerMode, VecModel};
+use slint::{Color as SlintColor, Model, ModelRc, SharedString, Timer, TimerMode, VecModel};
 use std::cell::RefCell;
+use std::fs;
 use std::rc::Rc;
 use std::time::Duration;
 
 slint::include_modules!();
 
-const CANVAS_W: u32 = 960;
-const CANVAS_H: u32 = 640;
-const CHART_W: u32 = 340;
-const CHART_H: u32 = 120;
+const CANVAS_W: u32 = 980;
+const CANVAS_H: u32 = 660;
+const CHART_W: u32 = 320;
+const CHART_H: u32 = 110;
+
+fn scan_building_files() -> Vec<String> {
+    let mut files = Vec::new();
+    if let Ok(entries) = fs::read_dir("assets/buildings") {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("txt") {
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    files.push(name.to_string());
+                }
+            }
+        }
+    }
+    files.sort();
+    if files.is_empty() {
+        files.push("pabellon_universitario.txt".to_string());
+    }
+    files
+}
 
 fn update_floor_selector(app: &AppWindow, num_floors: usize) {
     let mut opts: Vec<SharedString> = Vec::with_capacity(num_floors + 1);
@@ -38,17 +58,23 @@ fn update_floor_selector(app: &AppWindow, num_floors: usize) {
 }
 
 fn main() {
-    let building = load_building_from_ascii("assets/buildings/pabellon_universitario.txt")
-    .expect("Fallo al construir el edificio");
+    let available_files = scan_building_files();
+    let initial_path = format!("assets/buildings/{}", available_files[0]);
+
+    let building =
+    load_building_from_ascii(&initial_path).expect("Fallo al construir el edificio inicial");
 
     let config = SimulationConfig::default();
     let mut sim = SimulationEngine::new(building, config);
-    sim.select_next_warden(); // Seleccionar el primer brigadista por defecto en el Inspector
+    sim.select_next_warden();
 
     let app = AppWindow::new().expect("No se pudo crear la ventana de Slint");
+    let slint_files: Vec<SharedString> = available_files.iter().map(|s| s.into()).collect();
+    app.set_building_files(ModelRc::new(VecModel::from(slint_files)));
     app.set_total_agents(sim.agents.len() as i32);
     update_floor_selector(&app, sim.building.floors.len());
 
+    let current_file_rc = Rc::new(RefCell::new(initial_path));
     let sim_rc = Rc::new(RefCell::new(sim));
 
     let refresh_ui = {
@@ -64,7 +90,6 @@ fn main() {
                 app.set_sim_time_text(format!("{:.1} s", s.time_elapsed_s).into());
                 app.set_global_alarm(s.global_alarm);
 
-                // Poblar el Inspector Visual con el Agente/Brigadista seleccionado
                 let sel_id = s.selected_agent_id.unwrap_or(0);
                 if let Some(a) = s.agents.get(sel_id) {
                     app.set_insp_title(
@@ -88,9 +113,9 @@ fn main() {
                     );
 
                     let accent = if a.role == MacesRole::TrainedLeader {
-                        SlintColor::from_rgb_u8(148, 226, 213)
+                        SlintColor::from_rgb_u8(20, 184, 166)
                     } else {
-                        SlintColor::from_rgb_u8(137, 180, 250)
+                        SlintColor::from_rgb_u8(59, 130, 246)
                     };
                     app.set_insp_accent(accent);
 
@@ -158,6 +183,61 @@ fn main() {
         });
     }
 
+    // Selector e importador dinámico de archivos .txt en assets/buildings/
+    {
+        let app_weak = app.as_weak();
+        app.on_refresh_building_list(move || {
+            if let Some(app) = app_weak.upgrade() {
+                let files = scan_building_files();
+                let slint_files: Vec<SharedString> = files.iter().map(|s| s.into()).collect();
+                app.set_building_files(ModelRc::new(VecModel::from(slint_files)));
+                app.set_status_text(
+                    format!("Carpeta assets/buildings/ escaneada ({} planos).", files.len()).into(),
+                );
+            }
+        });
+    }
+
+    {
+        let app_weak = app.as_weak();
+        let s_rc = sim_rc.clone();
+        let path_rc = current_file_rc.clone();
+        let redraw = refresh_ui.clone();
+        app.on_select_building_file(move |idx| {
+            let Some(app) = app_weak.upgrade() else { return };
+            let model = app.get_building_files();
+            if let Some(fname) = model.row_data(idx as usize) {
+                let full_path = format!("assets/buildings/{}", fname);
+                match load_building_from_ascii(&full_path) {
+                    Ok(fresh) => {
+                        *path_rc.borrow_mut() = full_path;
+                        let mut s = s_rc.borrow_mut();
+                        s.is_running = false;
+                        app.set_is_running(false);
+                        app.set_view_mode(0);
+                        s.reset(fresh);
+                        s.select_next_warden();
+                        update_floor_selector(&app, s.building.floors.len());
+                        app.set_status_text(
+                            format!(
+                                "Plano '{}' cargado ({} pisos, {} celdas).",
+                                    fname,
+                                    s.building.floors.len(),
+                                    s.building.cells.len()
+                            )
+                                .into(),
+                        );
+                        drop(s);
+                        redraw();
+                    }
+                    Err(err) => {
+                        app.set_status_text(format!("Error al cargar plano: {}", err).into());
+                    }
+                }
+            }
+        });
+    }
+
     {
         let app_weak = app.as_weak();
         let s_rc = sim_rc.clone();
@@ -195,25 +275,25 @@ fn main() {
     {
         let app_weak = app.as_weak();
         let s_rc = sim_rc.clone();
+        let path_rc = current_file_rc.clone();
         let redraw = refresh_ui.clone();
         app.on_change_population(move || {
             if let Some(app) = app_weak.upgrade() {
-                if let Ok(fresh) =
-                    load_building_from_ascii("assets/buildings/pabellon_universitario.txt")
-                    {
-                        let mut s = s_rc.borrow_mut();
-                        s.config.population_size =
-                        (app.get_population_slider().round() as usize).max(10);
-                        s.reset(fresh);
-                        s.select_next_warden();
-                        app.set_total_agents(s.agents.len() as i32);
-                        update_floor_selector(&app, s.building.floors.len());
-                        app.set_status_text(
-                            format!("Población regenerada con {} agentes.", s.agents.len()).into(),
-                        );
-                        drop(s);
-                        redraw();
-                    }
+                let current_path = path_rc.borrow().clone();
+                if let Ok(fresh) = load_building_from_ascii(&current_path) {
+                    let mut s = s_rc.borrow_mut();
+                    s.config.population_size =
+                    (app.get_population_slider().round() as usize).max(10);
+                    s.reset(fresh);
+                    s.select_next_warden();
+                    app.set_total_agents(s.agents.len() as i32);
+                    update_floor_selector(&app, s.building.floors.len());
+                    app.set_status_text(
+                        format!("Aforo actualizado a {} ocupantes.", s.agents.len()).into(),
+                    );
+                    drop(s);
+                    redraw();
+                }
             }
         });
     }
@@ -270,25 +350,36 @@ fn main() {
     {
         let app_weak = app.as_weak();
         let s_rc = sim_rc.clone();
+        let path_rc = current_file_rc.clone();
         let redraw = refresh_ui.clone();
         app.on_load_preset(move |preset_idx| {
-            if let Ok(fresh) =
-                load_building_from_ascii("assets/buildings/pabellon_universitario.txt")
-                {
-                    let mut s = s_rc.borrow_mut();
-                    let desc = s.apply_preset(preset_idx, fresh);
-                    s.select_next_warden();
-                    if let Some(app) = app_weak.upgrade() {
-                        app.set_enable_comm(s.config.enable_communication);
-                        app.set_enable_social(s.config.enable_social_bonds);
-                        app.set_enable_wardens(s.config.enable_wardens);
-                        app.set_panic_slider(s.config.initial_panic_pct * 100.0);
-                        update_floor_selector(&app, s.building.floors.len());
-                        app.set_status_text(desc.into());
+            let current_path = path_rc.borrow().clone();
+            if let Ok(fresh) = load_building_from_ascii(&current_path) {
+                let mut s = s_rc.borrow_mut();
+                let desc = s.apply_preset(preset_idx, fresh);
+                // Encender también las baldosas correspondientes al preset para la onda 2D
+                for cid in 0..s.building.cells.len() {
+                    let t = s.building.cells[cid].temperature_c;
+                    if t > AMBIENT_TEMP_C + 10.0 {
+                        let f = s.building.cells[cid].floor;
+                        let (cx, cy) = s.building.cells[cid].center();
+                        let (r, c) = s.building.tile_coords_at(cx, cy);
+                        s.building.ignite_at_tile(f, r, c, t);
                     }
-                    drop(s);
-                    redraw();
                 }
+                s.building.recompute_maze_flow();
+                s.select_next_warden();
+                if let Some(app) = app_weak.upgrade() {
+                    app.set_enable_comm(s.config.enable_communication);
+                    app.set_enable_social(s.config.enable_social_bonds);
+                    app.set_enable_wardens(s.config.enable_wardens);
+                    app.set_panic_slider(s.config.initial_panic_pct * 100.0);
+                    update_floor_selector(&app, s.building.floors.len());
+                    app.set_status_text(desc.into());
+                }
+                drop(s);
+                redraw();
+            }
         });
     }
 
@@ -306,16 +397,16 @@ fn main() {
 
             let mut s = s_rc.borrow_mut();
 
-            if let Some(aid) = screen_to_agent(
-                &s.building,
-                &s.agents,
-                CANVAS_W as f32,
-                CANVAS_H as f32,
-                view_mode,
-                px,
-                py,
-            ) {
-                if tool == 2 {
+            if tool == 2 {
+                if let Some(aid) = screen_to_agent(
+                    &s.building,
+                    &s.agents,
+                    CANVAS_W as f32,
+                    CANVAS_H as f32,
+                    view_mode,
+                    px,
+                    py,
+                ) {
                     s.selected_agent_id = Some(aid);
                     app.set_status_text(format!("Inspeccionando Agente #{:03}", aid).into());
                     drop(s);
@@ -326,7 +417,8 @@ fn main() {
 
             match tool {
                 0 => {
-                    if let Some(cid) = screen_to_cell(
+                    // Inyección puntual de fuego en la baldosa exacta (f, r, c) clicada
+                    if let Some((f, r, c)) = screen_to_floor_tile(
                         &s.building,
                         CANVAS_W as f32,
                         CANVAS_H as f32,
@@ -334,24 +426,21 @@ fn main() {
                         px,
                         py,
                     ) {
-                        let cell = &mut s.building.cells[cid];
-                        if cell.temperature_c < 100.0 {
-                            cell.temperature_c = 165.0;
-                            cell.fire_time_s = 2.0;
-                            cell.smoke_opacity = 0.25;
-                        } else if cell.temperature_c < FLASHOVER_TEMP_C {
-                            cell.temperature_c = 550.0;
-                            cell.fire_time_s = 25.0;
-                            cell.smoke_opacity = 0.85;
+                        let curr_t = s.building.tile_temp[f][r][c];
+                        let new_t = if curr_t < 100.0 {
+                            240.0 // Conato puntual
+                        } else if curr_t < FLASHOVER_TEMP_C {
+                            620.0 // Epicentro de Flashover en onda
                         } else {
-                            cell.temperature_c = AMBIENT_TEMP_C;
-                            cell.fire_time_s = 0.0;
-                            cell.smoke_opacity = 0.0;
-                        }
-                        let temp_now = cell.temperature_c;
+                            AMBIENT_TEMP_C
+                        };
+                        s.building.ignite_at_tile(f, r, c, new_t);
                         s.building.recompute_maze_flow();
                         app.set_status_text(
-                            format!("Celda #{} -> {:.0} °C (Laberinto actualizado)", cid, temp_now)
+                            format!(
+                                "Piso {} Baldosa ({}, {}) -> {:.0} °C (Onda térmica propagándose por metro cuadrado)",
+                                    f, r, c, new_t
+                            )
                                 .into(),
                         );
                     }
@@ -377,7 +466,7 @@ fn main() {
                         s.building.recompute_maze_flow();
                         app.set_status_text(
                             format!(
-                                "Puerta #{} {} -> Flujo del laberinto redirigido.",
+                                "Puerta #{} {} -> Rutas actualizadas.",
                                 pid,
                                 if blocked { "CLAUSURADA" } else { "ABIERTA" }
                             )
@@ -386,7 +475,30 @@ fn main() {
                     }
                 }
                 _ => {
-                    if let Some(cid) = screen_to_cell(
+                    if let Some((f, r, c)) = screen_to_floor_tile(
+                        &s.building,
+                        CANVAS_W as f32,
+                        CANVAS_H as f32,
+                        view_mode,
+                        px,
+                        py,
+                    ) {
+                        let cid = s.building.cell_grid[f][r][c].unwrap_or(0);
+                        let t_tile = s.building.tile_temp[f][r][c];
+                        let smk_tile = s.building.tile_smoke[f][r][c];
+                        app.set_status_text(
+                            format!(
+                                "[Piso {} | Baldosa ({},{})] Celda #{} | T local: {:.0}°C | Humo local: {:.0}%",
+                                    f,
+                                    r,
+                                    c,
+                                    cid,
+                                    t_tile,
+                                    smk_tile * 100.0
+                            )
+                                .into(),
+                        );
+                    } else if let Some(cid) = screen_to_cell(
                         &s.building,
                         CANVAS_W as f32,
                         CANVAS_H as f32,
@@ -397,12 +509,11 @@ fn main() {
                         let c = &s.building.cells[cid];
                         app.set_status_text(
                             format!(
-                                "[Piso {}] Celda #{} ({:?}, {:.0}m²) | T: {:.0}°C | Ocupantes: {}",
+                                "[Piso {}] Celda #{} ({:?}, {:.0}m²) | Ocupantes: {}",
                                     c.floor,
                                     c.id,
                                     c.kind,
                                     c.area_m2,
-                                    c.temperature_c,
                                     c.occupant_ids.len()
                             )
                                 .into(),
@@ -418,21 +529,21 @@ fn main() {
     {
         let app_weak = app.as_weak();
         let s_rc = sim_rc.clone();
+        let path_rc = current_file_rc.clone();
         let redraw = refresh_ui.clone();
         app.on_reset_building(move || {
-            if let Ok(fresh) =
-                load_building_from_ascii("assets/buildings/pabellon_universitario.txt")
-                {
-                    let mut s = s_rc.borrow_mut();
-                    s.reset(fresh);
-                    s.select_next_warden();
-                    if let Some(app) = app_weak.upgrade() {
-                        update_floor_selector(&app, s.building.floors.len());
-                        app.set_status_text("Edificio reiniciado (22 °C). Rutina Normal.".into());
-                    }
-                    drop(s);
-                    redraw();
+            let current_path = path_rc.borrow().clone();
+            if let Ok(fresh) = load_building_from_ascii(&current_path) {
+                let mut s = s_rc.borrow_mut();
+                s.reset(fresh);
+                s.select_next_warden();
+                if let Some(app) = app_weak.upgrade() {
+                    update_floor_selector(&app, s.building.floors.len());
+                    app.set_status_text("Simulación reiniciada (22 °C).".into());
                 }
+                drop(s);
+                redraw();
+            }
         });
     }
 

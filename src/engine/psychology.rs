@@ -49,22 +49,42 @@ pub fn step_psychology_and_physiology(
 
         let cell_id = agents[i].current_cell;
         let cell = &building.cells[cell_id];
+        let f = agents[i].floor;
+        let (ar, ac) = building.tile_coords_at(agents[i].x, agents[i].y);
 
-        agents[i].accumulate_fed(dt, cell.temperature_c, cell.co_ppm, cell.co2_pct);
+        // Exposición fisiológica exacta en la baldosa (1m x 1m) donde está parado el agente
+        let local_temp = building.tile_temp[f][ar][ac];
+        let local_co = building.tile_co[f][ar][ac];
+        let local_co2 = building.tile_co2[f][ar][ac];
+        let local_smoke = building.tile_smoke[f][ar][ac];
+
+        agents[i].accumulate_fed(dt, local_temp, local_co, local_co2);
         if agents[i].action_state == AgentActionState::Incapacitated {
             continue;
         }
 
-        let sees_local_hazard = cell.smoke_opacity > 0.10
-        || cell.temperature_c > AMBIENT_TEMP_C + 12.0
-        || cell.portals.iter().any(|&pid| {
-            if let Some(other_id) = building.portals[pid].other_cell(cell.id) {
-                building.cells[other_id].temperature_c > 110.0
-                || building.cells[other_id].smoke_opacity > 0.25
-            } else {
-                false
+        // Detectar humo o calor en un radio visual de 3 baldosas dentro de su sala/pasillo
+        let mut max_nearby_temp = local_temp;
+        let mut max_nearby_smoke = local_smoke;
+        for dr in -3..=3isize {
+            for dc in -3..=3isize {
+                let nr = ar as isize + dr;
+                let nc = ac as isize + dc;
+                if nr >= 0
+                    && nr < building.rows as isize
+                    && nc >= 0
+                    && nc < building.cols as isize
+                    {
+                        let (ur, uc) = (nr as usize, nc as usize);
+                        if building.cell_grid[f][ur][uc] == Some(cell_id) {
+                            max_nearby_temp = max_nearby_temp.max(building.tile_temp[f][ur][uc]);
+                            max_nearby_smoke = max_nearby_smoke.max(building.tile_smoke[f][ur][uc]);
+                        }
+                    }
             }
-        });
+        }
+
+        let sees_local_hazard = max_nearby_smoke > 0.08 || max_nearby_temp > AMBIENT_TEMP_C + 10.0;
 
         match agents[i].action_state {
             AgentActionState::Normal => {
